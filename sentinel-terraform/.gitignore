@@ -7,3 +7,6 @@ plan.txt
 crash.log
 .terraform.lock.hcl
 .DS_Store
+
+# Local state override (see terraform/backend_override.tf)
+*_override.tf
