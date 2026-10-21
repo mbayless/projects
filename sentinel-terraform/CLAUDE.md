@@ -16,8 +16,8 @@ I'm learning Terraform and Azure. I run the commands myself in the VS Code termi
 |---|---|
 | `terraform/` | All Terraform code. Run every `terraform` command from here. |
 | `rules/*.yaml` | One file per analytics rule. `terraform/rules.tf` turns each into a Sentinel rule. Files starting with `_` are skipped. |
-| `bootstrap/setup.sh` | One-time Azure setup for the GitHub pipeline. Not run yet. |
-| `.github/workflows/sentinel.yml` | Plan on pull request, apply on merge. Does not run from here yet (see "Not done yet"). |
+| `bootstrap/setup.sh` | One-time Azure setup for the GitHub pipeline. Not run yet (step 3). |
+| `.github/workflows/sentinel.yml` | Plan on pull request, apply on merge. Does not run from here yet (see Next steps, step 5). |
 
 ## Running locally (current setup)
 
@@ -34,64 +34,83 @@ Sign-in uses the `az login` session. If a command says you're not logged in, run
 
 Done (2026-10-20):
 
-- Moved this folder into the `projects` repo (github.com/mbayless/projects). It's not committed yet.
+- Moved this folder into the `projects` repo (github.com/mbayless/projects, default branch `main`). It's not committed yet.
 - Installed the Azure CLI and signed in.
 - Created resource group `rg-sentinel-lab` in eastus. It's empty.
-- `terraform plan` works: **6 to add, 0 to change, 0 to destroy**. Saved as `terraform/tfplan`, readable copy in `terraform/plan.txt`.
+- Local `terraform plan` works: **6 to add, 0 to change, 0 to destroy**. Nothing has been applied.
 
-## Next steps
+Decision: **deploy through GitHub Actions, not a local apply.** Keep using `terraform plan` locally to learn, but let the pipeline do every apply. Because nothing was ever applied locally, there's no local state to move.
 
-Run these from `sentinel-terraform/terraform` in the VS Code terminal.
+## Next steps: set up GitHub Actions
 
-**1. Check you're still signed in to the right subscription.**
+**1. Install the GitHub CLI and sign in.** The bootstrap uses it to save the repo variables for you. Without it you'd type five values into GitHub by hand.
+
+```bash
+brew install gh
+gh auth login
+```
+
+**2. Check you're signed in to Azure on the right subscription.**
 
 ```bash
 az account show --query "{name:name, id:id}" -o table
 ```
 
-**2. Register the Azure resource providers.** The Terraform code turns off automatic registration, so this has to happen first or the apply fails. It's free and takes a few minutes.
+**3. Run the bootstrap** from `sentinel-terraform/`. It asks you to confirm the subscription, then:
+
+- registers the Azure resource providers (so you don't need to do that by hand),
+- reuses `rg-sentinel-lab` and creates `rg-terraform-state` with a storage account for Terraform state,
+- creates the `github-sentinel-terraform` sign-in identity, which only trusts pull requests and the `production` environment of `mbayless/projects`,
+- gives that identity its roles, and gives you read access to the state,
+- saves `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `TF_STATE_RG`, `TF_STATE_STORAGE` as repo variables and creates the `production` environment.
 
 ```bash
-for ns in Microsoft.OperationalInsights Microsoft.SecurityInsights Microsoft.OperationsManagement Microsoft.Insights; do
-  az provider register --namespace "$ns"
-done
+chmod +x bootstrap/setup.sh
+./bootstrap/setup.sh mbayless/projects eastus
 ```
 
-Check until all four say `Registered`:
+Read the output: each `==>` line is one stage. It prints the five values at the end. Safe to re-run if it stops partway.
+
+**4. Add yourself as a required reviewer** in GitHub: **projects repo > Settings > Environments > production > Required reviewers**. Every apply then waits for you to click Approve. Do this before step 6.
+
+**5. Move the workflow to the repo root.** Ask Claude to do this edit with you. GitHub only runs workflows from `projects/.github/workflows/`, and every path in the file has to start with `sentinel-terraform/`:
+
+- `paths:` filters: `sentinel-terraform/terraform/**`, `sentinel-terraform/rules/**`, and the workflow's new location `.github/workflows/sentinel.yml`
+- `defaults.run.working-directory`: `sentinel-terraform/terraform`
+- the plan-comment script reads `sentinel-terraform/terraform/plan.txt`
+- the `concurrency` group name can stay as it is
+
+**6. Commit on a branch and open a pull request.** Don't push straight to `main`: a push to `main` runs the Apply job.
 
 ```bash
-for ns in Microsoft.OperationalInsights Microsoft.SecurityInsights Microsoft.OperationsManagement Microsoft.Insights; do
-  echo "$ns: $(az provider show --namespace "$ns" --query registrationState -o tsv 2>/dev/null)"
-done
+cd ~/Desktop/Shannon_GitHub/projects
+git checkout -b sentinel-pipeline
+git add .github sentinel-terraform
+git status            # check: no tfstate, tfplan, plan.txt or *_override.tf files
+git commit -m "Add Sentinel Terraform pipeline"
+git push -u origin sentinel-pipeline
+gh pr create --fill
 ```
 
-**3. Make a fresh plan and read it.** Yesterday's `tfplan` should still work, but a new one confirms nothing changed overnight.
+The Plan job runs on the PR and posts the plan as a comment. Expect **6 to add, 0 to change, 0 to destroy**, the same as the local plan. If the plan fails, the job log in the **Actions** tab shows why.
+
+**7. Merge the PR.** That push to `main` starts the Apply job. It waits for your approval (step 4), then creates the resources. Watch it under **Actions**.
+
+**8. Check the result** in the Azure portal under **Microsoft Sentinel > Analytics**. All three rules should be there. Rules only fire once Activity log data arrives, which can take 10 to 15 minutes.
+
+**9. Point your local Terraform at the shared state** so local plans see what the pipeline built. In `sentinel-terraform/terraform`:
 
 ```bash
-terraform plan -out=tfplan
+rm backend_override.tf
+terraform init -reconfigure \
+  -backend-config="resource_group_name=rg-terraform-state" \
+  -backend-config="storage_account_name=<TF_STATE_STORAGE from step 3>"
+terraform plan
 ```
 
-Look for `Plan: 6 to add, 0 to change, 0 to destroy.` Anything to change or destroy means something is different from yesterday. Stop and find out why.
-
-**4. Apply the saved plan.** This creates the real resources. Applying a saved plan file doesn't ask "yes" again, because you already reviewed it.
-
-```bash
-terraform apply tfplan
-```
-
-**5. Check the result.**
-
-```bash
-terraform output
-terraform state list
-```
-
-Then look in the Azure portal under **Microsoft Sentinel > Analytics**. All three rules should be there. Rules only fire once Activity log data arrives, which can take 10 to 15 minutes.
+Expect `No changes.` From now on, `terraform plan` locally is for learning and checking only. Changes go through a pull request. Keep `provider_override.tf`: it only sets the subscription ID.
 
 ## Not done yet
 
-- **Workflow location.** GitHub only runs workflows in `.github/workflows/` at the repo root. To use the pipeline, move `sentinel.yml` to `projects/.github/workflows/` and prefix its paths with `sentinel-terraform/`.
-- **Bootstrap.** `bootstrap/setup.sh` creates the state storage account and the GitHub sign-in identity. Its arguments are `<owner>/<repo> <region>`. This repo is `mbayless/projects`, not the `sentinel-terraform` name the README uses.
-- **Moving state to Azure.** After the bootstrap, delete `terraform/backend_override.tf` and run `terraform init -migrate-state` with the two `-backend-config` values. Otherwise the pipeline won't know about resources already created locally.
 - **Cost.** The workspace has no daily data cap (`daily_quota_gb = -1`). Fine for Activity-log data. Revisit before connecting bigger data sources.
-- **Cleanup.** To remove everything: `terraform destroy`, then `az group delete -n rg-sentinel-lab`.
+- **Cleanup.** To remove everything, delete the resources through the pipeline or with a local `terraform destroy` against the shared state, then `az group delete -n rg-sentinel-lab` and `az group delete -n rg-terraform-state`. The `github-sentinel-terraform` app registration stays in Entra ID until you delete it.
