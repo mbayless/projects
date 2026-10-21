@@ -1,0 +1,45 @@
+id: role-assignment-created
+kind: scheduled
+display_name: New Azure role assignment created
+description: >-
+  Someone granted an Azure RBAC role. Attackers add role assignments to
+  escalate privileges or keep access.
+severity: Medium
+enabled: true
+
+query: |
+  AzureActivity
+  | where OperationNameValue =~ "MICROSOFT.AUTHORIZATION/ROLEASSIGNMENTS/WRITE"
+  | where ActivityStatusValue in~ ("Success", "Succeeded")
+  | project TimeGenerated, Caller, CallerIpAddress, SubscriptionId,
+      ResourceGroup, _ResourceId, CorrelationId
+
+query_frequency: PT1H
+query_period: PT1H
+trigger_operator: GreaterThan
+trigger_threshold: 0
+
+suppression_enabled: false
+suppression_duration: PT5H
+create_incident: true
+group_incidents: false
+
+tactics:
+  - PrivilegeEscalation
+  - Persistence
+techniques:
+  - T1098
+
+entities:
+  - type: Account
+    fields:
+      - identifier: FullName
+        column: Caller
+  - type: IP
+    fields:
+      - identifier: Address
+        column: CallerIpAddress
+  - type: AzureResource
+    fields:
+      - identifier: ResourceId
+        column: _ResourceId

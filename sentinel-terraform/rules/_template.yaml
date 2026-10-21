@@ -1,0 +1,57 @@
+# Copy this file to rules/<your-rule>.yaml and edit it.
+# Files whose names start with "_" are skipped by Terraform.
+
+# Unique, stable id. Changing it deletes the old rule and creates a new one.
+id: my-new-rule
+
+# scheduled (runs every query_frequency) or nrt (near real time, about every minute)
+kind: scheduled
+
+display_name: My new rule
+description: What this rule detects and why it matters.
+
+# Informational, Low, Medium or High
+severity: Medium
+enabled: true
+
+# KQL. Test it in Logs in the Sentinel workspace first.
+query: |
+  AzureActivity
+  | where OperationNameValue =~ "MICROSOFT.KEYVAULT/VAULTS/DELETE"
+  | where ActivityStatusValue in~ ("Success", "Succeeded")
+  | project TimeGenerated, Caller, CallerIpAddress, _ResourceId
+
+# Scheduled rules only (ignored for nrt). ISO 8601 durations.
+query_frequency: PT1H     # how often the query runs
+query_period: PT1H        # how far back it looks
+trigger_operator: GreaterThan   # GreaterThan, LessThan, Equal, NotEqual
+trigger_threshold: 0            # alert when result count is above this
+
+# Optional: stop repeat alerts for a while after one fires.
+suppression_enabled: false
+suppression_duration: PT5H
+
+create_incident: true
+group_incidents: false   # group alerts with the same entities into one incident
+
+# MITRE ATT&CK. Tactics use Sentinel names without spaces,
+# e.g. InitialAccess, Persistence, PrivilegeEscalation, DefenseEvasion, Impact.
+tactics:
+  - Impact
+techniques:
+  - T1485
+
+# Map query columns to Sentinel entities.
+entities:
+  - type: Account
+    fields:
+      - identifier: FullName
+        column: Caller
+  - type: IP
+    fields:
+      - identifier: Address
+        column: CallerIpAddress
+  - type: AzureResource
+    fields:
+      - identifier: ResourceId
+        column: _ResourceId

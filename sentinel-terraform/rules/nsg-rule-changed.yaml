@@ -1,0 +1,41 @@
+id: nsg-rule-changed
+kind: nrt
+display_name: Network security group rule changed
+description: >-
+  A network security group or one of its rules was created or changed.
+  Attackers open NSG rules to weaken network defenses.
+severity: Medium
+enabled: true
+
+query: |
+  AzureActivity
+  | where OperationNameValue in~ (
+      "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/SECURITYRULES/WRITE",
+      "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/WRITE")
+  | where ActivityStatusValue in~ ("Success", "Succeeded")
+  | project TimeGenerated, Caller, CallerIpAddress, OperationNameValue,
+      ResourceGroup, _ResourceId
+
+suppression_enabled: false
+suppression_duration: PT5H
+create_incident: true
+group_incidents: true
+
+tactics:
+  - DefenseEvasion
+techniques:
+  - T1562
+
+entities:
+  - type: Account
+    fields:
+      - identifier: FullName
+        column: Caller
+  - type: IP
+    fields:
+      - identifier: Address
+        column: CallerIpAddress
+  - type: AzureResource
+    fields:
+      - identifier: ResourceId
+        column: _ResourceId

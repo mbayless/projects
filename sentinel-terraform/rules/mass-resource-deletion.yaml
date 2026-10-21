@@ -1,0 +1,46 @@
+id: mass-resource-deletion
+kind: scheduled
+display_name: Many Azure resources deleted by one account
+description: >-
+  One caller deleted five or more Azure resources within an hour. This can
+  point to a compromised account destroying data or infrastructure.
+severity: High
+enabled: true
+
+query: |
+  AzureActivity
+  | where OperationNameValue endswith "/DELETE"
+  | where ActivityStatusValue in~ ("Success", "Succeeded")
+  | where isnotempty(_ResourceId)
+  | summarize
+      DeletedCount = dcount(_ResourceId),
+      DeletedResources = make_set(_ResourceId, 50),
+      FirstSeen = min(TimeGenerated),
+      LastSeen = max(TimeGenerated)
+      by Caller, CallerIpAddress
+  | where DeletedCount >= 5
+
+query_frequency: PT1H
+query_period: PT1H
+trigger_operator: GreaterThan
+trigger_threshold: 0
+
+suppression_enabled: false
+suppression_duration: PT5H
+create_incident: true
+group_incidents: false
+
+tactics:
+  - Impact
+techniques:
+  - T1485
+
+entities:
+  - type: Account
+    fields:
+      - identifier: FullName
+        column: Caller
+  - type: IP
+    fields:
+      - identifier: Address
+        column: CallerIpAddress
