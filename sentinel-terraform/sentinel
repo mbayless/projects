@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# Terminal menu for checking and planning the Sentinel Terraform code.
+#
+# Usage: ./sentinel            open the menu
+#        ./sentinel <action>   run one action: validate, plan, rules, new, status
+#        ./sentinel ui         open the same actions in a browser window
+#
+# Every action prints the real command and what it does before running it,
+# so you can run the same thing by hand later. There is deliberately no
+# apply: deployments go through GitHub Actions (see CLAUDE.md).
+
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+TF_DIR="$ROOT/terraform"
+RULES_DIR="$ROOT/rules"
+PROVIDERS="Microsoft.OperationalInsights Microsoft.SecurityInsights Microsoft.OperationsManagement Microsoft.Insights"
+RESOURCE_GROUP="rg-sentinel-lab"
+
+if [[ -t 1 ]]; then
+  BOLD=$'\e[1m' DIM=$'\e[2m' RED=$'\e[31m' GREEN=$'\e[32m' YELLOW=$'\e[33m' CYAN=$'\e[36m' RESET=$'\e[0m'
+else
+  BOLD="" DIM="" RED="" GREEN="" YELLOW="" CYAN="" RESET=""
+fi
+
+ok()   { printf '  %s✓%s %s\n' "$GREEN" "$RESET" "$*"; }
+warn() { printf '  %s!%s %s\n' "$YELLOW" "$RESET" "$*"; }
+fail() { printf '  %s✗%s %s\n' "$RED" "$RESET" "$*"; }
+
+# explain "what it does" "command as you'd type it"
+explain() {
+  printf '\n%s▶ %s%s\n' "$CYAN$BOLD" "$2" "$RESET"
+  printf '%s  %s%s\n\n' "$DIM" "$1" "$RESET"
+}
+
+# Azure CLI prints a harmless Python SyntaxWarning on some installs; hide it.
+az_quiet() { az "$@" 2> >(grep -v -i -E 'SyntaxWarning|excludedActions' >&2); }
+
+signed_in() { az account show --output none 2>/dev/null; }
+
+need_az() {
+  if ! command -v az >/dev/null 2>&1; then
+    fail "Azure CLI not installed. Run: brew install azure-cli"
+    return 1
+  fi
+  if ! signed_in; then
+    fail "Not signed in to Azure. Run: az login"
+    return 1
+  fi
+}
+
+need_init() {
+  if [[ ! -d "$TF_DIR/.terraform" ]]; then
+    explain "Downloads the azurerm provider and sets up the state backend. Needed once per folder." \
+            "terraform init"
+    (cd "$TF_DIR" && terraform init -input=false) || return 1
+  fi
+}
+
+backend_mode() {
+  if [[ -f "$TF_DIR/backend_override.tf" ]]; then
+    echo "local file (terraform/terraform.tfstate)"
+  else
+    echo "Azure storage (shared with GitHub Actions)"
+  fi
+}
+
+# Read a top-level "key: value" line from a rule file.
+rule_field() { sed -n "s/^$2:[[:space:]]*//p" "$1" | head -1; }
+
+rule_files() {
+  local f
+  for f in "$RULES_DIR"/*.yaml; do
+    [[ -e "$f" ]] || continue
+    [[ "$(basename "$f")" == _* ]] && continue
+    echo "$f"
+  done
+}
+
+# --- Actions -----------------------------------------------------------------
+
+do_validate() {
+  local status=0
+  explain "Checks formatting. Lists any file that isn't in standard Terraform style. Changes nothing." \
+          "terraform fmt -check -recursive"
+  if (cd "$TF_DIR" && terraform fmt -check -recursive); then
+    ok "Formatting is clean"
+  else
+    fail "Files above need formatting. Fix with: cd terraform && terraform fmt -recursive"
+    status=1
+  fi
+
+  need_init || return 1
+  explain "Checks the code is valid: syntax, types, and that every rule YAML parses. No Azure access needed." \
+          "terraform validate"
+  if (cd "$TF_DIR" && terraform validate); then
+    ok "Configuration is valid"
+  else
+    status=1
+  fi
+  return $status
+}
+
+do_plan() {
+  need_az || return 1
+  need_init || return 1
+  explain "Compares the code with what exists in Azure and lists what would be created, changed or destroyed. Nothing in Azure changes. State: $(backend_mode)." \
+          "terraform plan"
+  (cd "$TF_DIR" && terraform plan -input=false)
+  local status=$?
+  echo
+  if [[ $status -eq 0 ]]; then
+    ok "Read the 'Plan:' line above. To deploy, open a pull request; GitHub Actions does the apply."
+  else
+    fail "Plan failed. The error is above."
+  fi
+  return $status
+}
+
+do_rules() {
+  explain "Lists the rule files Terraform deploys. Files starting with _ are skipped." \
+          "ls rules/*.yaml"
+  local f count=0
+  printf '  %s%-26s %-10s %-14s %s%s\n' "$BOLD" "ID" "KIND" "SEVERITY" "NAME" "$RESET"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    local enabled
+    enabled="$(rule_field "$f" enabled)"
+    printf '  %-26s %-10s %-14s %s%s\n' \
+      "$(rule_field "$f" id)" \
+      "$(rule_field "$f" kind)" \
+      "$(rule_field "$f" severity)" \
+      "$(rule_field "$f" display_name)" \
+      "$([[ "$enabled" == "false" ]] && echo "  (disabled)")"
+    count=$((count + 1))
+  done < <(rule_files)
+  echo
+  ok "$count rule(s) in rules/"
+}
+
+do_new_rule() {
+  local id="${1:-}"
+  if [[ -z "$id" ]]; then
+    printf '\n  Rule id (lowercase words with dashes, e.g. keyvault-deleted): '
+    read -r id
+  fi
+  if [[ ! "$id" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+    fail "Use lowercase letters, numbers and dashes only."
+    return 1
+  fi
+  local target="$RULES_DIR/$id.yaml"
+  if [[ -e "$target" ]]; then
+    fail "rules/$id.yaml already exists."
+    return 1
+  fi
+  explain "Copies the template to a new rule file and sets its id." \
+          "cp rules/_template.yaml rules/$id.yaml"
+  cp "$RULES_DIR/_template.yaml" "$target" || return 1
+  sed -i '' "s/^id: my-new-rule$/id: $id/" "$target"
+  ok "Created rules/$id.yaml"
+  echo
+  echo "  Next:"
+  echo "   1. Edit it: display_name, description, severity, query, tactics, entities."
+  echo "   2. Test the KQL query in the Sentinel workspace under Logs."
+  echo "   3. Run Validate, then Plan. Expect 1 to add."
+  echo "   4. Commit on a branch and open a pull request."
+}
+
+do_status() {
+  printf '\n%sTools%s\n' "$BOLD" "$RESET"
+  local tool
+  for tool in terraform az gh; do
+    if command -v "$tool" >/dev/null 2>&1; then ok "$tool installed"; else warn "$tool not installed (brew install $( [[ $tool == az ]] && echo azure-cli || echo $tool ))"; fi
+  done
+
+  printf '\n%sTerraform%s\n' "$BOLD" "$RESET"
+  ok "State: $(backend_mode)"
+  if [[ -d "$TF_DIR/.terraform" ]]; then ok "Initialised"; else warn "Not initialised yet (Validate or Plan runs terraform init)"; fi
+  ok "$(rule_files | grep -c .) rule(s) in rules/"
+
+  printf '\n%sAzure%s\n' "$BOLD" "$RESET"
+  need_az || return 1
+  explain "Shows which account and subscription the az CLI (and Terraform) will use." \
+          "az account show --query \"{name:name, id:id, user:user.name}\" -o table"
+  az_quiet account show --query "{name:name, id:id, user:user.name}" -o table
+
+  explain "Checks the resource group Terraform deploys into exists." \
+          "az group show -n $RESOURCE_GROUP"
+  if az_quiet group show -n "$RESOURCE_GROUP" --output none 2>/dev/null; then
+    ok "$RESOURCE_GROUP exists"
+  else
+    fail "$RESOURCE_GROUP not found. The bootstrap creates it."
+  fi
+
+  explain "Checks the Azure resource providers Sentinel needs. The bootstrap registers them." \
+          "az provider show --namespace <name> --query registrationState -o tsv"
+  local ns state
+  for ns in $PROVIDERS; do
+    state="$(az_quiet provider show --namespace "$ns" --query registrationState -o tsv 2>/dev/null)"
+    if [[ "$state" == "Registered" ]]; then ok "$ns: $state"; else warn "$ns: ${state:-unknown}"; fi
+  done
+}
+
+do_ui() {
+  local venv="$ROOT/.venv"
+  if [[ ! -x "$venv/bin/streamlit" ]]; then
+    explain "Creates a private Python environment in .venv and installs Streamlit into it. Needed once." \
+            "python3 -m venv .venv && .venv/bin/pip install -r ui/requirements.txt"
+    printf '  Install now? [y/N] '
+    read -r answer
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+      warn "Skipped. Run the command above yourself, then ./sentinel ui again."
+      return 1
+    fi
+    python3 -m venv "$venv" && "$venv/bin/pip" install -q -r "$ROOT/ui/requirements.txt" || {
+      fail "Install failed. The error is above."
+      return 1
+    }
+  fi
+  explain "Starts the web interface on this Mac only and opens it in your browser. Stop it with Ctrl+C." \
+          "streamlit run ui/app.py"
+  "$venv/bin/streamlit" run "$ROOT/ui/app.py" \
+    --server.address localhost --browser.gatherUsageStats false
+}
+
+# --- Menu --------------------------------------------------------------------
+
+header() {
+  clear
+  printf '%s Sentinel Terraform%s\n' "$BOLD" "$RESET"
+  printf ' ─────────────────────────────────────────────\n'
+  if command -v az >/dev/null 2>&1 && signed_in; then
+    printf ' Azure: %s  %s✓ signed in%s\n' "$(az account show --query name -o tsv 2>/dev/null)" "$GREEN" "$RESET"
+  else
+    printf ' Azure: %snot signed in%s (az login)\n' "$YELLOW" "$RESET"
+  fi
+  printf ' State: %s   Rules: %s\n\n' "$(backend_mode)" "$(rule_files | grep -c .)"
+}
+
+menu() {
+  local choice
+  while true; do
+    header
+    echo " 1) Validate   check formatting and syntax"
+    echo " 2) Plan       preview changes in Azure"
+    echo " 3) Rules      list analytics rules"
+    echo " 4) New rule   create one from the template"
+    echo " 5) Status     tools, sign-in, resource group, providers"
+    echo " 6) UI         open these actions in your browser"
+    echo " q) Quit"
+    echo
+    printf '%s Deploying happens through GitHub Actions, not here.%s\n\n' "$DIM" "$RESET"
+    printf ' > '
+    read -r choice || exit 0
+    case "$choice" in
+      1) do_validate ;;
+      2) do_plan ;;
+      3) do_rules ;;
+      4) do_new_rule ;;
+      5) do_status ;;
+      6) do_ui ;;
+      q|Q) exit 0 ;;
+      *) continue ;;
+    esac
+    printf '\n%sPress Enter for the menu%s' "$DIM" "$RESET"
+    read -r _ || exit 0
+  done
+}
+
+case "${1:-}" in
+  "")              menu ;;
+  validate)        do_validate ;;
+  plan)            do_plan ;;
+  rules)           do_rules ;;
+  new)             do_new_rule "${2:-}" ;;
+  status)          do_status ;;
+  ui)              do_ui ;;
+  -h|--help|help)  sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)               echo "Unknown action: $1 (try: validate, plan, rules, new, status, ui)" >&2; exit 1 ;;
+esac

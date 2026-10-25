@@ -10,3 +10,7 @@ crash.log
 
 # Local state override (see terraform/backend_override.tf)
 *_override.tf
+
+# Python environment for ./sentinel ui
+.venv/
+__pycache__/
