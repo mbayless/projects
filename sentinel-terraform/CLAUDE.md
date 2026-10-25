@@ -16,7 +16,8 @@ I'm learning Terraform and Azure. I run the commands myself in the VS Code termi
 |---|---|
 | `terraform/` | All Terraform code. Run every `terraform` command from here. |
 | `rules/*.yaml` | One file per analytics rule. `terraform/rules.tf` turns each into a Sentinel rule. Files starting with `_` are skipped. |
-| `bootstrap/setup.sh` | One-time Azure setup for the GitHub pipeline. Not run yet (step 3). |
+| `state-storage/` | Terraform that creates the storage account for Terraform state. Its own state stays local (`state-storage/terraform.tfstate`). Run once, before the bootstrap. |
+| `bootstrap/setup.sh` | One-time Azure setup for the GitHub pipeline: identity, roles, repo variables. Reads the storage account from `state-storage/`. |
 | `../.github/workflows/sentinel.yml` | Plan on pull request, apply on merge. Lives at the `projects` repo root so GitHub runs it. |
 
 ## Running locally (current setup)
@@ -56,16 +57,28 @@ gh auth login
 az account show --query "{name:name, id:id}" -o table
 ```
 
-**3. Run the bootstrap** from `sentinel-terraform/`. It asks you to confirm the subscription, then:
+**3a. Create the state storage with Terraform** from `sentinel-terraform/state-storage/`. Its own state stays on your Mac (`state-storage/terraform.tfstate`, gitignored). Don't delete that file: it's how Terraform knows it owns the storage account.
 
-- registers the Azure resource providers (so you don't need to do that by hand),
-- reuses `rg-sentinel-lab` and creates `rg-terraform-state` with a storage account for Terraform state,
+`rg-terraform-state` already exists from the first bootstrap run (2026-10-25), so import it once before the apply:
+
+```bash
+cd ~/Desktop/Shannon_GitHub/projects/sentinel-terraform/state-storage
+terraform init
+terraform import azurerm_resource_group.state /subscriptions/63a23dcb-26d9-400f-8584-e47597a6c631/resourceGroups/rg-terraform-state
+terraform plan     # expect 4 to add: random suffix, storage account, tfstate container, your role
+terraform apply
+```
+
+**3b. Run the bootstrap** from `sentinel-terraform/`. It reads the storage account name from `state-storage/`, asks you to confirm the subscription, then:
+
+- registers the Azure resource providers,
+- reuses `rg-sentinel-lab`,
 - creates the `github-sentinel-terraform` sign-in identity, which only trusts pull requests and the `production` environment of `mbayless/projects`,
-- gives that identity its roles, and gives you read access to the state,
+- gives that identity its roles, including access to the state storage,
 - saves `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `TF_STATE_RG`, `TF_STATE_STORAGE` as repo variables and creates the `production` environment.
 
 ```bash
-chmod +x bootstrap/setup.sh
+cd ~/Desktop/Shannon_GitHub/projects/sentinel-terraform
 ./bootstrap/setup.sh mbayless/projects eastus
 ```
 
@@ -99,7 +112,7 @@ The Plan job runs on the PR and posts the plan as a comment. Expect **6 to add, 
 rm backend_override.tf
 terraform init -reconfigure \
   -backend-config="resource_group_name=rg-terraform-state" \
-  -backend-config="storage_account_name=<TF_STATE_STORAGE from step 3>"
+  -backend-config="storage_account_name=$(terraform -chdir=../state-storage output -raw storage_account_name)"
 terraform plan
 ```
 
@@ -108,4 +121,4 @@ Expect `No changes.` From now on, `terraform plan` locally is for learning and c
 ## Not done yet
 
 - **Cost.** The workspace has no daily data cap (`daily_quota_gb = -1`). Fine for Activity-log data. Revisit before connecting bigger data sources.
-- **Cleanup.** To remove everything, delete the resources through the pipeline or with a local `terraform destroy` against the shared state, then `az group delete -n rg-sentinel-lab` and `az group delete -n rg-terraform-state`. The `github-sentinel-terraform` app registration stays in Entra ID until you delete it.
+- **Cleanup.** To remove everything, delete the resources through the pipeline or with a local `terraform destroy` against the shared state, then `az group delete -n rg-sentinel-lab`, and `terraform destroy` in `state-storage/` for the state storage. The `github-sentinel-terraform` app registration stays in Entra ID until you delete it.
