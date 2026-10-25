@@ -21,7 +21,7 @@ GitHub signs in to Azure with OpenID Connect (OIDC). No passwords or client secr
 | `terraform/rules.tf` | Turns every YAML file in `rules/` into a scheduled or NRT analytics rule |
 | `rules/*.yaml` | Three sample rules that work on Azure Activity data |
 | `rules/_template.yaml` | Copy this to write a new rule (files starting with `_` are skipped) |
-| `.github/workflows/sentinel.yml` | Plan on pull requests, apply on merge to `main` |
+| `../.github/workflows/sentinel.yml` | Plan on pull requests, apply on merge to `main` (at the `projects` repo root) |
 
 ## Sample rules
 

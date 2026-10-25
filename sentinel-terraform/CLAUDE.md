@@ -17,7 +17,7 @@ I'm learning Terraform and Azure. I run the commands myself in the VS Code termi
 | `terraform/` | All Terraform code. Run every `terraform` command from here. |
 | `rules/*.yaml` | One file per analytics rule. `terraform/rules.tf` turns each into a Sentinel rule. Files starting with `_` are skipped. |
 | `bootstrap/setup.sh` | One-time Azure setup for the GitHub pipeline. Not run yet (step 3). |
-| `.github/workflows/sentinel.yml` | Plan on pull request, apply on merge. Does not run from here yet (see Next steps, step 5). |
+| `../.github/workflows/sentinel.yml` | Plan on pull request, apply on merge. Lives at the `projects` repo root so GitHub runs it. |
 
 ## Running locally (current setup)
 
@@ -73,12 +73,7 @@ Read the output: each `==>` line is one stage. It prints the five values at the 
 
 **4. Add yourself as a required reviewer** in GitHub: **projects repo > Settings > Environments > production > Required reviewers**. Every apply then waits for you to click Approve. Do this before step 6.
 
-**5. Move the workflow to the repo root.** Ask Claude to do this edit with you. GitHub only runs workflows from `projects/.github/workflows/`, and every path in the file has to start with `sentinel-terraform/`:
-
-- `paths:` filters: `sentinel-terraform/terraform/**`, `sentinel-terraform/rules/**`, and the workflow's new location `.github/workflows/sentinel.yml`
-- `defaults.run.working-directory`: `sentinel-terraform/terraform`
-- the plan-comment script reads `sentinel-terraform/terraform/plan.txt`
-- the `concurrency` group name can stay as it is
+**5. Move the workflow to the repo root.** Done 2026-10-25. It's now at `projects/.github/workflows/sentinel.yml`, because GitHub only runs workflows from the repo root. Its paths, working directory and plan-comment file all start with `sentinel-terraform/`.
 
 **6. Commit on a branch and open a pull request.** Don't push straight to `main`: a push to `main` runs the Apply job.
 

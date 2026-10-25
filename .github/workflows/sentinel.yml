@@ -4,14 +4,14 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "terraform/**"
-      - "rules/**"
+      - "sentinel-terraform/terraform/**"
+      - "sentinel-terraform/rules/**"
       - ".github/workflows/sentinel.yml"
   push:
     branches: [main]
     paths:
-      - "terraform/**"
-      - "rules/**"
+      - "sentinel-terraform/terraform/**"
+      - "sentinel-terraform/rules/**"
       - ".github/workflows/sentinel.yml"
   workflow_dispatch:
 
@@ -35,7 +35,7 @@ env:
 
 defaults:
   run:
-    working-directory: terraform
+    working-directory: sentinel-terraform/terraform
 
 jobs:
   plan:
@@ -80,7 +80,7 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- sentinel-terraform-plan -->';
-            let plan = fs.readFileSync('terraform/plan.txt', 'utf8');
+            let plan = fs.readFileSync('sentinel-terraform/terraform/plan.txt', 'utf8');
             const summary = (plan.match(/Plan: .*|No changes\..*/) || ['See the log below.'])[0];
             if (plan.length > 60000) plan = '...(truncated)\n' + plan.slice(-60000);
             const ok = process.env.PLAN_STATUS === '0';
