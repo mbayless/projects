@@ -16,7 +16,8 @@ GitHub signs in to Azure with OpenID Connect (OIDC). No passwords or client secr
 
 | Path | What it does |
 |---|---|
-| `bootstrap/setup.sh` | One-time Azure setup: resource groups, state storage, the GitHub sign-in identity and its roles |
+| `state-storage/` | Terraform for the state storage account. Its own state stays local. Run once, before the bootstrap |
+| `bootstrap/setup.sh` | One-time Azure setup: Sentinel resource group, the GitHub sign-in identity and its roles |
 | `terraform/main.tf` | Log Analytics workspace, Sentinel onboarding, and the Azure Activity log connection |
 | `terraform/rules.tf` | Turns every YAML file in `rules/` into a scheduled or NRT analytics rule |
 | `rules/*.yaml` | Three sample rules that work on Azure Activity data |
@@ -53,7 +54,18 @@ git commit -m "Sentinel analytics rules as code"
 gh repo create sentinel-terraform --private --source=. --push
 ```
 
-### 3. Run the Azure bootstrap
+### 3. Create the state storage with Terraform
+
+Terraform keeps the pipeline's state in an Azure storage account. `state-storage/` creates it, keeping its own small state file on your Mac:
+
+```bash
+cd state-storage
+terraform init
+terraform apply
+cd ..
+```
+
+### 3b. Run the Azure bootstrap
 
 Replace `YOUR-GITHUB-USER` with your GitHub username.
 

@@ -9,6 +9,7 @@ go through GitHub Actions (see CLAUDE.md).
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -17,12 +18,15 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 TF_DIR = ROOT / "terraform"
+STATE_DIR = ROOT / "state-storage"
+STATE_RG = "rg-terraform-state"
+GITHUB_REPO = "mbayless/projects"
 RULES_DIR = ROOT / "rules"
 REPO_ROOT = ROOT.parent
 RESOURCE_GROUP = "rg-sentinel-lab"
 PROVIDERS = ["Microsoft.OperationalInsights", "Microsoft.SecurityInsights",
              "Microsoft.OperationsManagement", "Microsoft.Insights"]
-TF_ENV = {**os.environ, "TF_INPUT": "0"}
+TF_ENV = {**os.environ, "TF_INPUT": "0", "GIT_TERMINAL_PROMPT": "0"}  # fail, never hang, on a prompt
 
 st.set_page_config(page_title="Sentinel Terraform", page_icon="🛡️", layout="wide")
 
@@ -61,13 +65,18 @@ def explain(shown, what):
     st.caption(what)
 
 
-def stream(cmd, shown, what, cwd=TF_DIR):
-    """Show the command, run it, and stream its output live. Returns (code, output)."""
+def stream(cmd, shown, what, cwd=TF_DIR, answer=None):
+    """Show the command, run it, and stream its output live. Returns (code, output).
+
+    answer is typed into the command's input, e.g. "y" for a confirmation prompt.
+    """
     explain(shown, what)
     box = st.empty()
     lines = []
-    proc = subprocess.Popen(cmd, cwd=cwd, env=TF_ENV, text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(cmd, cwd=cwd, env=TF_ENV, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, stdin=subprocess.PIPE)
+    proc.stdin.write(f"{answer}\n" if answer else "")
+    proc.stdin.close()
     for line in proc.stdout:
         lines.append(line)
         box.code("".join(lines)[-30000:] or " ", language=None)
@@ -78,12 +87,21 @@ def stream(cmd, shown, what, cwd=TF_DIR):
     return proc.returncode, out
 
 
-def ensure_init():
-    if (TF_DIR / ".terraform").is_dir():
+def ensure_init(folder=TF_DIR):
+    if (folder / ".terraform").is_dir():
         return True
     code, _ = stream(["terraform", "init", "-no-color"], "terraform init",
-                     "Downloads the azurerm provider and sets up the state backend. Needed once per folder.")
+                     "Downloads the azurerm provider and sets up the state backend. Needed once per folder.",
+                     cwd=folder)
     return code == 0
+
+
+def state_storage():
+    """Outputs of state-storage/ ({} until it's applied) and what its local state holds."""
+    code, out = quiet(["terraform", "output", "-json"], cwd=STATE_DIR)
+    outputs = {k: v.get("value") for k, v in json.loads(out).items()} if code == 0 and out else {}
+    managed = quiet(["terraform", "state", "list"], cwd=STATE_DIR)[1].splitlines()
+    return outputs, managed
 
 
 def show_last(key):
@@ -129,7 +147,7 @@ ACTION_LABEL = {"created": "➕ create", "updated in-place": "✏️ update", "d
                 "replaced": "♻️ replace", "read during apply": "👁️ read"}
 
 
-def show_plan_result(out, code):
+def show_plan_result(out, code, pipeline_note=True):
     if code != 0:
         st.error("Plan failed. The error is in the output above.")
         return
@@ -148,7 +166,62 @@ def show_plan_result(out, code):
     changes = [{"resource": addr, "action": ACTION_LABEL.get(act, act)} for addr, act in CHANGE_RE.findall(out)]
     if changes:
         st.dataframe(changes, hide_index=True, width="stretch")
-    st.info("Nothing in Azure changed. To deploy, open a pull request; GitHub Actions runs the apply.")
+    if pipeline_note:
+        st.info("Nothing in Azure changed. To deploy, open a pull request; GitHub Actions runs the apply.")
+
+
+# --- Pull request -------------------------------------------------------------
+
+# Paths a Sentinel pull request may contain, relative to the projects repo.
+PR_PATHS = ["sentinel-terraform", ".github/workflows/sentinel.yml"]
+# Local-only files that must never be committed. .gitignore should already stop them.
+FORBIDDEN_RE = re.compile(r"(\.tfstate|tfplan|plan\.txt|_override\.tf|\.terraform/|\.venv/)")
+
+
+def open_pull_request(current, branch, message):
+    """Branch, commit, push and open a PR, showing each command. Stops at the first failure."""
+    def step(cmd, what):
+        code, out = stream(cmd, shlex.join(cmd), what, cwd=REPO_ROOT)
+        log.append(f"$ {shlex.join(cmd)}\n{out}")
+        if code != 0:
+            st.error("That step failed. The error is above; nothing after it ran.")
+        return code == 0, out
+
+    log = []
+    if current != branch:
+        if quiet(["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=REPO_ROOT)[0] == 0:
+            st.error(f"Branch {branch} already exists. Pick a new name, or switch to it in the terminal first.")
+            return
+        if not step(["git", "checkout", "-b", branch],
+                    "Creates a new branch from where you are and switches to it. Your changes come along.")[0]:
+            return
+    if not step(["git", "add", *PR_PATHS], "Stages the Sentinel files for the commit.")[0]:
+        return
+
+    staged = quiet(["git", "diff", "--cached", "--name-only"], cwd=REPO_ROOT)[1].splitlines()
+    outside = [f for f in staged if not any(f == p or f.startswith(p + "/") for p in PR_PATHS)]
+    secret = [f for f in staged if FORBIDDEN_RE.search(f)]
+    if outside or secret:
+        quiet(["git", "reset", "-q", *staged], cwd=REPO_ROOT)
+        st.error("Stopped before committing, and unstaged everything. These files must not go in this commit:\n\n"
+                 + "\n".join(f"- `{f}`" for f in outside + secret))
+        return
+    st.markdown("**Files in this commit:**\n" + "\n".join(f"- `{f}`" for f in staged))
+
+    if not step(["git", "commit", "-m", message], "Saves the staged files as one commit on this branch.")[0]:
+        return
+    if not step(["git", "push", "-u", "origin", branch],
+                "Uploads the branch to GitHub. This does not deploy anything.")[0]:
+        return
+    ok, out = step(["gh", "pr", "create", "--base", "main", "--head", branch, "--title", message,
+                    "--body", "Opened from the Sentinel Terraform UI. The Plan job posts the plan below."],
+                   "Opens the pull request. GitHub Actions then runs the plan and comments it here.")
+    if ok:
+        url = out.strip().splitlines()[-1] if out.strip() else ""
+        st.session_state["pr"] = {"shown": "commit, push and open pull request", "out": "\n".join(log), "url": url}
+        st.success(f"Pull request opened: {url}")
+        st.info("Next: wait for the Plan comment on the pull request, check it, then merge. "
+                "The Apply job waits for approval in the production environment.")
 
 
 # --- Sidebar ------------------------------------------------------------------
@@ -173,8 +246,104 @@ with st.sidebar:
 st.title("Sentinel Terraform")
 st.caption("Check, plan and manage the Sentinel analytics rules. Each button shows the command it runs.")
 
-tab_plan, tab_validate, tab_rules, tab_deploy, tab_status = st.tabs(
-    ["📋 Plan", "✅ Validate", "📜 Rules", "🚀 Deploy", "🩺 Status"])
+tab_setup, tab_plan, tab_validate, tab_rules, tab_deploy, tab_status = st.tabs(
+    ["⚙️ Setup", "📋 Plan", "✅ Validate", "📜 Rules", "🚀 Deploy", "🩺 Status"])
+
+# --- Setup --------------------------------------------------------------------
+
+with tab_setup:
+    st.subheader("One-time setup for the GitHub pipeline")
+    st.write("Two steps, once per subscription. After that, every deploy goes through a pull request.")
+
+    # Step 1: state storage with Terraform (its own state stays local).
+    outputs, managed = state_storage()
+    st.markdown("### 1. State storage")
+    st.caption("`state-storage/` creates the storage account the pipeline keeps Terraform state in. "
+               "Its own state stays on this Mac in `state-storage/terraform.tfstate`. Don't delete that file.")
+    if outputs.get("storage_account_name"):
+        st.success(f"Created: **{outputs['storage_account_name']}** in {outputs['resource_group_name']}")
+    elif account is None:
+        st.warning("Sign in to Azure first (`az login`), then Refresh.")
+    else:
+        rg_exists = quiet(["az", "group", "exists", "-n", STATE_RG])[1] == "true"
+        if rg_exists and "azurerm_resource_group.state" not in managed:
+            st.info(f"`{STATE_RG}` already exists in Azure. Import it first so Terraform manages it "
+                    "instead of trying to create it again.")
+            if st.button("Import existing resource group"):
+                rg_id = f"/subscriptions/{account['id']}/resourceGroups/{STATE_RG}"
+                if ensure_init(STATE_DIR):
+                    cmd = ["terraform", "import", "-no-color", "azurerm_resource_group.state", rg_id]
+                    code, out = stream(cmd, f"terraform import azurerm_resource_group.state {rg_id}",
+                                       "Records the existing resource group in Terraform's state. "
+                                       "Changes nothing in Azure.", cwd=STATE_DIR)
+                    if code == 0:
+                        st.success("Imported. Now run the plan.")
+        else:
+            if st.button("Plan state storage"):
+                if ensure_init(STATE_DIR):
+                    code, out = stream(["terraform", "plan", "-no-color", "-out=tfplan"],
+                                       "terraform plan -out=tfplan",
+                                       "Shows what would be created and saves the plan, so Apply does exactly this.",
+                                       cwd=STATE_DIR)
+                    st.session_state["state_plan"] = {"shown": "terraform plan", "out": out,
+                                                      "code": code}
+                    show_plan_result(out, code, pipeline_note=False)
+            elif "state_plan" in st.session_state:
+                last = st.session_state["state_plan"]
+                show_last("state_plan")
+                show_plan_result(last["out"], last["code"], pipeline_note=False)
+
+            saved = st.session_state.get("state_plan", {}).get("code") == 0 and (STATE_DIR / "tfplan").exists()
+            ok_apply = st.checkbox("I've read the plan above. Create these resources in Azure.",
+                                   disabled=not saved)
+            if st.button("Apply state storage", type="primary", disabled=not (saved and ok_apply)):
+                code, out = stream(["terraform", "apply", "-no-color", "tfplan"], "terraform apply tfplan",
+                                   "Creates exactly what the saved plan showed.", cwd=STATE_DIR)
+                (STATE_DIR / "tfplan").unlink(missing_ok=True)
+                st.session_state.pop("state_plan", None)
+                if code == 0:
+                    st.success("State storage created. Continue with step 2.")
+                    st.button("Show step 2")
+                else:
+                    st.error("Apply failed. The error is above.")
+            if not saved:
+                st.caption("Run the plan first. Apply uses the saved plan.")
+
+    # Step 2: bootstrap (GitHub identity, roles, repo variables).
+    st.markdown("### 2. GitHub sign-in identity and repo variables")
+    st.caption("`bootstrap/setup.sh` creates the `github-sentinel-terraform` identity, gives it its roles, "
+               "and saves the five repo variables the pipeline needs.")
+    gh_vars = set()
+    if have("gh"):
+        code, out = quiet(["gh", "variable", "list", "-R", GITHUB_REPO, "--json", "name"])
+        if code == 0 and out:
+            gh_vars = {v["name"] for v in json.loads(out)}
+    needed = ["AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID", "TF_STATE_RG", "TF_STATE_STORAGE"]
+    for name in needed:
+        st.markdown(f"{'✅' if name in gh_vars else '⬜'} `{name}`")
+
+    if not outputs.get("storage_account_name"):
+        st.caption("Finish step 1 first.")
+    elif not (have("gh") and quiet(["gh", "auth", "status"])[0] == 0):
+        st.warning("Install and sign in to the GitHub CLI first: `brew install gh && gh auth login`")
+    elif account is not None:
+        repo = st.text_input("GitHub repo", value=GITHUB_REPO)
+        location = st.text_input("Azure region", value="eastus")
+        ok_boot = st.checkbox(f"Use subscription **{account.get('name')}** ({account.get('id')})")
+        if st.button("Run bootstrap", type="primary", disabled=not ok_boot):
+            code, out = stream(["./bootstrap/setup.sh", repo, location],
+                               f"./bootstrap/setup.sh {repo} {location}",
+                               "Each ==> line is one stage. Safe to re-run if it stops partway. "
+                               "Your tick above answers its 'Continue with this subscription?' question.",
+                               cwd=ROOT, answer="y")
+            st.session_state["bootstrap"] = {"shown": "bootstrap/setup.sh", "out": out}
+            if code == 0:
+                st.success("Bootstrap finished. Next: add yourself as a required reviewer on the "
+                           "production environment in GitHub, then open a pull request on the Deploy tab.")
+            else:
+                st.error("Bootstrap stopped. The error is above. Fix it and run it again.")
+        else:
+            show_last("bootstrap")
 
 # --- Plan ---------------------------------------------------------------------
 
@@ -277,18 +446,36 @@ with tab_deploy:
         else:
             st.markdown(f"⬜ {label}  \n&nbsp;&nbsp;&nbsp;&nbsp;Next: `{fix}`")
 
-    st.markdown("**Uncommitted changes** in `sentinel-terraform/`")
-    explain("git status --short sentinel-terraform", "Lists files you've changed but not committed yet.")
-    code, out = quiet(["git", "status", "--short", "sentinel-terraform"], cwd=REPO_ROOT)
-    st.code(out or "(nothing to commit)", language=None)
+    st.divider()
+    st.markdown("### Open a pull request")
+    current = quiet(["git", "branch", "--show-current"], cwd=REPO_ROOT)[1]
+    st.markdown(f"Current branch: `{current or 'unknown'}`")
+    explain(f"git status --short {' '.join(PR_PATHS)}", "Lists files you've changed but not committed yet.")
+    changes = quiet(["git", "status", "--short", *PR_PATHS], cwd=REPO_ROOT)[1]
+    st.code(changes or "(nothing to commit)", language=None)
 
-    st.markdown("**Open a pull request.** Run these in the VS Code terminal from `projects/`:")
-    st.code("git checkout -b rule/<name>\n"
-            "git add sentinel-terraform\n"
-            "git status            # check: no tfstate, tfplan, plan.txt or *_override.tf files\n"
-            'git commit -m "Describe the change"\n'
-            "git push -u origin rule/<name>\n"
-            "gh pr create --fill", language="bash")
+    on_feature = current not in ("", "main")
+    branch = st.text_input("Branch name", value=current if on_feature else "rule/",
+                           help="A new branch for this change, e.g. rule/keyvault-deleted. Never main.")
+    message = st.text_input("Commit message", placeholder="Add Key Vault deletion rule",
+                            help="Also becomes the pull request title.")
+    reviewed = st.checkbox("I've checked the files above and the Plan tab result")
+
+    branch_ok = (branch not in ("", "main", "rule/")
+                 and quiet(["git", "check-ref-format", "--branch", branch], cwd=REPO_ROOT)[0] == 0)
+    if branch and not branch_ok:
+        st.caption("Enter a valid branch name other than main, e.g. rule/keyvault-deleted.")
+    ready = gh_ok and bool(changes) and branch_ok and bool(message.strip()) and reviewed
+    if not gh_ok:
+        st.caption("Install and sign in to the GitHub CLI to open pull requests here.")
+    elif not changes:
+        st.caption("No changes to send. Edit a rule or the Terraform code first.")
+
+    if st.button("Commit, push and open pull request", type="primary", disabled=not ready):
+        open_pull_request(current, branch, message.strip())
+    elif "pr" in st.session_state:
+        show_last("pr")
+        st.success(f"Pull request: {st.session_state['pr']['url']}")
 
     st.markdown("**Recent pipeline runs**")
     if not gh_ok:

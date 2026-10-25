@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # One-time Azure setup for the Sentinel Terraform pipeline.
 #
+# Run state-storage/ first (terraform apply there). It creates the storage
+# account for Terraform state; this script reads its name from that folder.
+#
 # Usage: ./bootstrap/setup.sh OWNER/REPO [LOCATION]
 #   e.g. ./bootstrap/setup.sh octocat/sentinel-terraform eastus
 #
 # Optional environment variables:
 #   SENTINEL_RG            (default rg-sentinel-lab)
-#   STATE_RG               (default rg-terraform-state)
 #   APP_NAME               (default github-sentinel-terraform)
 #   CONNECT_ACTIVITY_LOG   (default true; false skips Monitoring Contributor on the subscription)
 #
@@ -17,10 +19,9 @@ set -euo pipefail
 REPO="${1:-}"
 LOCATION="${2:-eastus}"
 SENTINEL_RG="${SENTINEL_RG:-rg-sentinel-lab}"
-STATE_RG="${STATE_RG:-rg-terraform-state}"
 APP_NAME="${APP_NAME:-github-sentinel-terraform}"
 CONNECT_ACTIVITY_LOG="${CONNECT_ACTIVITY_LOG:-true}"
-STATE_CONTAINER="tfstate"
+STATE_DIR="$(cd "$(dirname "$0")/.." && pwd)/state-storage"
 
 if [[ -z "$REPO" || "$REPO" != */* ]]; then
   echo "Usage: $0 OWNER/REPO [LOCATION]" >&2
@@ -28,6 +29,16 @@ if [[ -z "$REPO" || "$REPO" != */* ]]; then
 fi
 
 step() { printf '\n==> %s\n' "$*"; }
+
+# --- State storage (created by Terraform in state-storage/) -----------------
+STATE_RG="$(terraform -chdir="$STATE_DIR" output -raw resource_group_name 2>/dev/null || true)"
+STORAGE_NAME="$(terraform -chdir="$STATE_DIR" output -raw storage_account_name 2>/dev/null || true)"
+STORAGE_ID="$(terraform -chdir="$STATE_DIR" output -raw storage_account_id 2>/dev/null || true)"
+if [[ -z "$STORAGE_NAME" || -z "$STORAGE_ID" || -z "$STATE_RG" ]]; then
+  echo "No state storage found. Create it with Terraform first:" >&2
+  echo "  cd state-storage && terraform init && terraform apply" >&2
+  exit 1
+fi
 
 # --- Subscription -----------------------------------------------------------
 SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
@@ -37,6 +48,7 @@ TENANT_ID="$(az account show --query tenantId -o tsv)"
 echo "Subscription: $SUBSCRIPTION_NAME ($SUBSCRIPTION_ID)"
 echo "Tenant:       $TENANT_ID"
 echo "GitHub repo:  $REPO"
+echo "State:        $STORAGE_NAME in $STATE_RG (from state-storage/)"
 echo "Location:     $LOCATION"
 read -r -p "Continue with this subscription? [y/N] " answer
 [[ "$answer" =~ ^[Yy]$ ]] || { echo "Stopped. Pick another with: az account set --subscription <id>"; exit 1; }
@@ -47,38 +59,8 @@ for ns in Microsoft.OperationalInsights Microsoft.SecurityInsights Microsoft.Ope
 done
 
 # --- Resource groups --------------------------------------------------------
-step "Creating resource groups"
+step "Creating the Sentinel resource group"
 az group create --name "$SENTINEL_RG" --location "$LOCATION" --output none
-az group create --name "$STATE_RG" --location "$LOCATION" --output none
-
-# --- State storage ----------------------------------------------------------
-step "Creating Terraform state storage"
-STORAGE_NAME="$(az storage account list --resource-group "$STATE_RG" \
-  --query "[?tags.purpose=='terraform-state'] | [0].name" -o tsv)"
-if [[ -z "$STORAGE_NAME" ]]; then
-  STORAGE_NAME="sttfstate$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 8)"
-  az storage account create \
-    --name "$STORAGE_NAME" \
-    --resource-group "$STATE_RG" \
-    --location "$LOCATION" \
-    --sku Standard_LRS \
-    --kind StorageV2 \
-    --min-tls-version TLS1_2 \
-    --allow-blob-public-access false \
-    --allow-shared-key-access false \
-    --tags purpose=terraform-state \
-    --output none
-fi
-STORAGE_ID="$(az storage account show --name "$STORAGE_NAME" --resource-group "$STATE_RG" --query id -o tsv)"
-
-az storage account blob-service-properties update \
-  --account-name "$STORAGE_NAME" --resource-group "$STATE_RG" \
-  --enable-versioning true --output none
-
-# Management-plane create, so it works with shared keys turned off.
-az storage container-rm create \
-  --storage-account "$STORAGE_NAME" --resource-group "$STATE_RG" \
-  --name "$STATE_CONTAINER" --public-access off --output none 2>/dev/null || true
 
 # --- GitHub sign-in identity ------------------------------------------------
 step "Creating the GitHub sign-in identity"
@@ -134,12 +116,6 @@ assign_role "Microsoft Sentinel Contributor" "$SENTINEL_RG_ID" "$SP_OBJECT_ID" S
 assign_role "Storage Blob Data Contributor" "$STORAGE_ID" "$SP_OBJECT_ID" ServicePrincipal
 if [[ "$CONNECT_ACTIVITY_LOG" == "true" ]]; then
   assign_role "Monitoring Contributor" "/subscriptions/$SUBSCRIPTION_ID" "$SP_OBJECT_ID" ServicePrincipal
-fi
-
-# Lets you run terraform plan from your Mac with az login.
-ME="$(az ad signed-in-user show --query id -o tsv 2>/dev/null || true)"
-if [[ -n "$ME" ]]; then
-  assign_role "Storage Blob Data Contributor" "$STORAGE_ID" "$ME" User
 fi
 
 # --- GitHub repository settings ---------------------------------------------
