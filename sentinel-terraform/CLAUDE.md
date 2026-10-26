@@ -19,6 +19,7 @@ I'm learning Terraform and Azure. I run the commands myself in the VS Code termi
 | `state-storage/` | Terraform that creates the storage account for Terraform state. Its own state stays local (`state-storage/terraform.tfstate`). Run once, before the bootstrap. |
 | `bootstrap/setup.sh` | One-time Azure setup for the GitHub pipeline: identity, roles, repo variables. Reads the storage account from `state-storage/`. |
 | `../.github/workflows/sentinel.yml` | Plan on pull request, apply on merge. Lives at the `projects` repo root so GitHub runs it. |
+| `scripts/close-old-incidents.sh` | Closes open incidents older than 14 days. Run daily by `../.github/workflows/sentinel-close-old-incidents.yml` (environment `sentinel-maintenance`, main only). Needs `jq`. |
 
 ## Running locally (current setup)
 

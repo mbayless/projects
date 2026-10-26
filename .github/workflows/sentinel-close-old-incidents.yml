@@ -1,0 +1,45 @@
+name: Close old Sentinel incidents
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # every day at 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Close open incidents created more than this many days ago
+        required: true
+        default: "14"
+      dry_run:
+        description: Only list them, don't close anything
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write # OIDC sign-in to Azure
+  contents: read
+
+concurrency:
+  group: sentinel-incident-cleanup
+  cancel-in-progress: false
+
+jobs:
+  close:
+    name: Close old incidents
+    runs-on: ubuntu-latest
+    # Azure trusts this environment's sign-in token. Bootstrap limits it to main.
+    environment: sentinel-maintenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Close incidents
+        env:
+          # Scheduled runs have no inputs: 14 days, and really close them.
+          DAYS: ${{ inputs.days || '14' }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        run: bash sentinel-terraform/scripts/close-old-incidents.sh

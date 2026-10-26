@@ -107,6 +107,14 @@ The pull request runs a plan and posts it as a comment. Read it: you should see 
 
 Rules created by hand in the portal are not touched. Terraform only manages rules that come from this repo.
 
+## Closing old incidents
+
+`.github/workflows/sentinel-close-old-incidents.yml` runs every day at 06:00 UTC and closes open incidents created more than 14 days ago, with classification **Undetermined** and an "Auto-closed" comment. Closed incidents keep their alerts, entities and comments and stay searchable.
+
+- **Try it first:** Actions > Close old Sentinel incidents > Run workflow. `dry_run` is on by default, so it only lists what it would close.
+- **From your Mac or the UI (Incidents tab):** `scripts/close-old-incidents.sh --dry-run 14`. Needs `jq` (`brew install jq`).
+- The job signs in through the `sentinel-maintenance` environment, which only runs from `main`. The bootstrap creates it.
+
 ## Run Terraform from your Mac (optional)
 
 ```bash
