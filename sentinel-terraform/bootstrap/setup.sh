@@ -74,20 +74,38 @@ if [[ -z "$SP_OBJECT_ID" ]]; then
 fi
 
 add_federated_credential() {
-  local name="$1" subject="$2"
-  if az ad app federated-credential list --id "$APP_ID" --query "[?name=='$name'].name" -o tsv | grep -q .; then
-    return
-  fi
-  az ad app federated-credential create --id "$APP_ID" --output none --parameters "{
+  local name="$1" subject="$2" current
+  local params="{
     \"name\": \"$name\",
     \"issuer\": \"https://token.actions.githubusercontent.com\",
     \"subject\": \"$subject\",
     \"audiences\": [\"api://AzureADTokenExchange\"]
   }"
+  current="$(az ad app federated-credential list --id "$APP_ID" --query "[?name=='$name'].subject | [0]" -o tsv)"
+  if [[ "$current" == "$subject" ]]; then
+    return
+  elif [[ -n "$current" ]]; then
+    echo "  updating $name: $current -> $subject"
+    az ad app federated-credential update --id "$APP_ID" --federated-credential-id "$name" \
+      --output none --parameters "$params"
+  else
+    az ad app federated-credential create --id "$APP_ID" --output none --parameters "$params"
+  fi
 }
+
+# The subject GitHub puts in its sign-in token starts with this prefix. Repos using
+# immutable subjects send repo:OWNER@ID/REPO@ID instead of repo:OWNER/REPO, so ask GitHub.
+SUBJECT_PREFIX="repo:${REPO}"
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  SUBJECT_PREFIX="$(gh api "repos/$REPO/actions/oidc/customization/sub" --jq '.sub_claim_prefix // empty' \
+    2>/dev/null || true)"
+  SUBJECT_PREFIX="${SUBJECT_PREFIX:-repo:${REPO}}"
+fi
+echo "  token subject prefix: $SUBJECT_PREFIX"
+
 # Pull requests run the plan; the production environment runs the apply.
-add_federated_credential "github-pull-request" "repo:${REPO}:pull_request"
-add_federated_credential "github-env-production" "repo:${REPO}:environment:production"
+add_federated_credential "github-pull-request" "${SUBJECT_PREFIX}:pull_request"
+add_federated_credential "github-env-production" "${SUBJECT_PREFIX}:environment:production"
 
 # --- Roles ------------------------------------------------------------------
 step "Assigning roles"

@@ -130,7 +130,7 @@ This uses your `az login` session. Avoid running `apply` locally once the pipeli
 
 | Error | Fix |
 |---|---|
-| `AADSTS700213: No matching federated identity record` | The repo name in the bootstrap must match exactly, and the apply job must use the `production` environment. Re-run the bootstrap with the right owner/repo. |
+| `AADSTS700213: No matching federated identity record` | Compare the subject in the error with the federated credentials on the `github-sentinel-terraform` app. Repos with immutable subjects send `repo:OWNER@ID/REPO@ID:...`; the bootstrap reads the right prefix from GitHub, so re-run it with the right owner/repo. The apply job must use the `production` environment. |
 | `AuthorizationFailed` right after bootstrap | Role assignments can take a few minutes to apply. Re-run the job. |
 | `One of the tables does not exist` on a rule | The table has no schema yet in the workspace. Connect its data source (or wait for the first Activity log events), then re-run. |
 | `resource already exists` | A rule with that id was created another way. Delete it in the portal or pick a new id. |

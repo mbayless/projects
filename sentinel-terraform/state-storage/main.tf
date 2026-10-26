@@ -6,7 +6,7 @@ resource "azurerm_resource_group" "state" {
   tags     = var.tags
 }
 
-# Storage account names must be globally unique: sttfstate + 8 random characters.
+# Storage account names must be globally unique: tfstatefile + 8 random characters.
 resource "random_string" "suffix" {
   length  = 8
   upper   = false
@@ -14,7 +14,7 @@ resource "random_string" "suffix" {
 }
 
 resource "azurerm_storage_account" "state" {
-  name                     = "sttfstate${random_string.suffix.result}"
+  name                     = "tfstatefile${random_string.suffix.result}"
   resource_group_name      = azurerm_resource_group.state.name
   location                 = azurerm_resource_group.state.location
   account_tier             = "Standard"
