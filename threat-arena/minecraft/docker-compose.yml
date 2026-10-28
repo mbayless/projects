@@ -1,0 +1,33 @@
+# Minecraft Java server for the Threat Arena. ./start runs this for you.
+# Image docs: https://docker-minecraft-server.readthedocs.io
+services:
+  minecraft:
+    image: itzg/minecraft-server:java21
+    container_name: threat-arena-minecraft
+    environment:
+      # You accept the Minecraft EULA (https://aka.ms/MinecraftEULA) by setting this. ./start asks you.
+      EULA: "${MINECRAFT_EULA:?Run ./start, or read https://aka.ms/MinecraftEULA and set MINECRAFT_EULA=TRUE in .env}"
+      TYPE: VANILLA
+      VERSION: "1.21.4" # arena.py is written for this version; join with the same version
+      LEVEL: threat-arena
+      LEVEL_TYPE: FLAT
+      MODE: creative # hostile mobs ignore creative players, so you can walk among them
+      FORCE_GAMEMODE: "true"
+      DIFFICULTY: easy # not peaceful: peaceful deletes hostile mobs
+      SPAWN_MONSTERS: "false"
+      SPAWN_ANIMALS: "false"
+      SPAWN_NPCS: "false"
+      GENERATE_STRUCTURES: "false"
+      MOTD: "Threat Arena"
+      MAX_PLAYERS: 10
+      VIEW_DISTANCE: 8
+      MEMORY: 2G
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: "${RCON_PASSWORD:?Run ./start to create .env}"
+    ports:
+      # This Mac only. To let others on your network join, remove "127.0.0.1:" from the first line.
+      # Never expose 25575 (RCON): it runs any command on the server.
+      - "127.0.0.1:25565:25565"
+      - "127.0.0.1:25575:25575"
+    volumes:
+      - ./server-data:/data

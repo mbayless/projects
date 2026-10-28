@@ -262,7 +262,9 @@ with tab_setup:
                "Its own state stays on this Mac in `state-storage/terraform.tfstate`. Don't delete that file.")
     if outputs.get("storage_account_name"):
         st.success(f"Created: **{outputs['storage_account_name']}** in {outputs['resource_group_name']}")
-    elif account is None:
+        st.caption("Changed something in `state-storage/`? Plan and apply it here. Pushing to GitHub doesn't "
+                   "apply it: this folder only runs from this Mac. Then re-run the bootstrap (step 2).")
+    if account is None:
         st.warning("Sign in to Azure first (`az login`), then Refresh.")
     else:
         rg_exists = quiet(["az", "group", "exists", "-n", STATE_RG])[1] == "true"

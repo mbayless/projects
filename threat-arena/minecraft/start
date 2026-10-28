@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Start the Minecraft server and play the threat feed in it.
+#
+# Usage: ./start [--rate N]      N = sample attacks per minute (default 30)
+#
+# The first run asks you to accept the Minecraft EULA, creates .env with a
+# random RCON password, and downloads the server (a few minutes). Ctrl+C stops
+# the bridge; ./stop stops the server.
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+cd "$HERE"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker is needed. Install Docker Desktop: https://www.docker.com/products/docker-desktop/" >&2
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker isn't running. Open Docker Desktop, wait for it to say it's running, then try again." >&2
+  exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "Python 3 is needed. On a Mac: brew install python" >&2
+  exit 1
+fi
+
+if [[ ! -f .env ]]; then
+  echo "The Minecraft server software has its own licence (EULA): https://aka.ms/MinecraftEULA"
+  read -r -p "Have you read it, and do you accept it? [y/N] " answer
+  [[ "$answer" =~ ^[Yy]$ ]] || { echo "Stopped. Nothing was created."; exit 1; }
+  cat >.env <<EOF
+# Created by ./start. Git ignores this file.
+MINECRAFT_EULA=TRUE
+RCON_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)
+EOF
+  echo "==> Created .env"
+fi
+
+echo "==> Starting the Minecraft server (first time: downloads about 600 MB)"
+docker compose up -d
+
+exec python3 bridge.py "$@"
