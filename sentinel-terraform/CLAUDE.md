@@ -19,6 +19,8 @@ I'm learning Terraform and Azure. I run the commands myself in the VS Code termi
 | `state-storage/` | Terraform that creates the storage account for Terraform state. Its own state stays local (`state-storage/terraform.tfstate`). Run once, before the bootstrap. |
 | `bootstrap/setup.sh` | One-time Azure setup for the GitHub pipeline: identity, roles, repo variables. Reads the storage account from `state-storage/`. |
 | `../.github/workflows/sentinel.yml` | Plan on pull request, apply on merge. Lives at the `projects` repo root so GitHub runs it. |
+| `terraform/modules/honeypot/` | Cowrie honeypot VM feeding the `Syslog` table. On via `terraform/lab.auto.tfvars`. Daily cap 1 GB, shuts down 11 pm Eastern. |
+| `terraform/imports.tf` | One-off: re-adopts resources lost from the state (see below). Delete after the next successful apply. |
 | `scripts/close-old-incidents.sh` | Closes open incidents older than 14 days. Run daily by `../.github/workflows/sentinel-close-old-incidents.yml` (environment `sentinel-maintenance`, main only). Needs `jq`. |
 
 ## Running locally (current setup)
@@ -119,7 +121,11 @@ terraform plan
 
 Expect `No changes.` From now on, `terraform plan` locally is for learning and checking only. Changes go through a pull request. Keep `provider_override.tf`: it only sets the subscription ID.
 
+## State loss (2026-10-26) and the fix
+
+The first pipeline applies saved state in the old storage account `sttfstateir60x19h`. Renaming the state storage deleted that account and the state in it, so the next apply failed with "already exists". `terraform/imports.tf` re-adopts the workspace, Sentinel onboarding, Activity log setting and two rules; the plan shows **5 to import**. Lesson: before replacing a state storage account, check the container for `sentinel.tfstate` and move it first.
+
 ## Not done yet
 
-- **Cost.** The workspace has no daily data cap (`daily_quota_gb = -1`). Fine for Activity-log data. Revisit before connecting bigger data sources.
+- **Cost.** The workspace has a 1 GB/day cap (`daily_quota_gb`, from 2026-11-01). Raise it before connecting bigger data sources.
 - **Cleanup.** To remove everything, delete the resources through the pipeline or with a local `terraform destroy` against the shared state, then `az group delete -n rg-sentinel-lab`, and `terraform destroy` in `state-storage/` for the state storage. The `github-sentinel-terraform` app registration stays in Entra ID until you delete it.

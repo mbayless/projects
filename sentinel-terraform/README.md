@@ -107,6 +107,16 @@ The pull request runs a plan and posts it as a comment. Read it: you should see 
 
 Rules created by hand in the portal are not touched. Terraform only manages rules that come from this repo.
 
+## The honeypot
+
+`terraform/modules/honeypot` deploys a small VM that real bots attack, so Sentinel has real attacks to learn from. It's turned on in `terraform/lab.auto.tfvars` (`enable_honeypot = true`) and deployed by the pipeline like everything else.
+
+- **What it is:** Ubuntu 22.04 running [Cowrie](https://github.com/cowrie/cowrie), a fake SSH server, on port 22. Bots can "log in" with common passwords and type commands, but the shell is fake.
+- **Isolation:** its own VNet; the NSG only opens port 22. The real SSH server is on 22222, which isn't reachable from the internet. To look inside, use `az vm run-command invoke -g rg-sentinel-lab -n vm-honeypot --command-id RunShellScript --scripts "docker logs --tail 20 cowrie"`.
+- **Logs:** Cowrie's JSON events go to syslog facility `local0`, and a data collection rule sends them to the workspace's `Syslog` table. In **Logs**: `Syslog | where ProcessName == "cowrie" | extend e = parse_json(SyslogMessage) | project TimeGenerated, e.eventid, e.src_ip, e.username, e.password, e.input`.
+- **Cost guardrails:** the workspace stops collecting after 1 GB a day (`daily_quota_gb`), and the VM shuts down at 11 pm Eastern. Start it again from the portal, the Threat Arena sidebar, or `az vm start -g rg-sentinel-lab -n vm-honeypot`.
+- **Turn it off:** set `enable_honeypot = false` and open a pull request. The plan shows it being destroyed.
+
 ## Closing old incidents
 
 `.github/workflows/sentinel-close-old-incidents.yml` runs every day at 06:00 UTC and closes open incidents created more than 14 days ago, with classification **Undetermined** and an "Auto-closed" comment. Closed incidents keep their alerts, entities and comments and stay searchable.

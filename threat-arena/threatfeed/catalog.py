@@ -139,4 +139,42 @@ ATTACKS = {
                 "Alert on a spike in failed logins across accounts"),
         minecraft_mob="vindicator",
     ),
+    "shell_recon": Attack(
+        name="Commands after break-in",
+        emoji="🕷️",
+        color=(255, 99, 146),
+        severity="High",
+        mitre_id="T1082",
+        mitre_name="System Information Discovery",
+        what="A bot got a password right and now runs commands to size up the machine: uname -a, "
+             "cat /proc/cpuinfo, free -m, who. It's deciding whether your server is worth using.",
+        why_bot="The same script runs the same commands seconds after login, from thousands of IPs. "
+                "On the honeypot the shell is fake, so you watch the playbook without any risk.",
+        look_for=("A successful login followed within seconds by system-info commands",
+                  "Commands checking CPU, memory or GPU (good for crypto-mining)",
+                  "Attempts to change passwords or add SSH keys (to keep access)"),
+        defend=("Strong unique passwords or SSH keys only, so the login never succeeds",
+                "Alert on interactive sessions from unknown IPs",
+                "Watch for new entries in ~/.ssh/authorized_keys"),
+        minecraft_mob="spider",
+    ),
+    "malware_download": Attack(
+        name="Malware download",
+        emoji="☠️",
+        color=(220, 220, 220),
+        severity="High",
+        mitre_id="T1105",
+        mitre_name="Ingress Tool Transfer",
+        what="After getting in, the bot downloads and tries to run its payload: usually a crypto-miner or "
+             "a botnet client (Mirai and friends) that turns your server into another attacker.",
+        why_bot="Download-and-run is fully automated: wget or curl a script, chmod +x, run it, delete it. "
+                "The download URL often points at another hacked server.",
+        look_for=("wget, curl, tftp or ftpget followed by chmod +x and ./something",
+                  "Files appearing in /tmp, /dev/shm or /var/tmp",
+                  "New outbound connections to mining pools or odd ports"),
+        defend=("Block outbound traffic servers don't need",
+                "Mount /tmp with noexec",
+                "Alert on processes started from /tmp or /dev/shm"),
+        minecraft_mob="ravager",
+    ),
 }

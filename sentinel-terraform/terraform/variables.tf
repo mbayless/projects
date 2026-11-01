@@ -16,6 +16,18 @@ variable "retention_in_days" {
   default     = 90
 }
 
+variable "daily_quota_gb" {
+  description = "Most data the workspace takes in per day, in GB. Once reached, collection stops until the next day. -1 means no cap."
+  type        = number
+  default     = 1
+}
+
+variable "enable_honeypot" {
+  description = "Deploy the Cowrie honeypot VM (modules/honeypot). Costs money and is open to the internet on port 22."
+  type        = bool
+  default     = false
+}
+
 variable "connect_activity_log" {
   description = "Send the subscription Activity log to the workspace. Needs Monitoring Contributor on the subscription."
   type        = bool

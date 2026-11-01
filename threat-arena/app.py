@@ -11,6 +11,10 @@ import streamlit as st
 
 from threatfeed import ATTACKS
 from threatfeed.sample import SampleSource
+from threatfeed.sentinel import SentinelSource, SourceError, honeypot_status, start_honeypot
+
+SOURCES = ["Sample data", "Sentinel (live)"]
+KEEP_MINUTES = 240  # how much history the page holds; the window slider shows part of it
 
 # Where the attacks land: the lab in Azure East US (Virginia).
 TARGET = {"name": "Your lab (Azure East US)", "lat": 36.67, "lon": -78.39}
@@ -21,25 +25,56 @@ st.set_page_config(page_title="Threat Arena", page_icon="🛡️", layout="wide"
 
 with st.sidebar:
     st.header("🛡️ Threat Arena")
-    source_name = st.selectbox("Source", ["Sample data"],
-                               help="More sources (honeypot, Sentinel) arrive in later steps. See README.")
-    rate = st.slider("Attacks per minute", 5, 120, 30, help="Sample data only: how busy the botnets are.")
-    window = st.slider("Show the last (minutes)", 5, 60, 15)
+    source_name = st.selectbox("Source", SOURCES, help="Sample data runs anywhere. Sentinel (live) reads "
+                               "real honeypot attacks from your Sentinel workspace with your az login.")
+    live_mode = source_name == "Sentinel (live)"
+    if not live_mode:
+        rate = st.slider("Attacks per minute", 5, 120, 30, help="How busy the simulated botnets are.")
+    window = st.slider("Show the last (minutes)", 5, KEEP_MINUTES, 60 if live_mode else 15, step=5)
     refresh = st.select_slider("Refresh every (seconds)", [2, 5, 10, 30], value=5)
     paused = st.toggle("Pause", value=False)
     shown = st.multiselect("Attack types", list(ATTACKS), default=list(ATTACKS),
                            format_func=lambda k: f"{ATTACKS[k].emoji} {ATTACKS[k].name}")
 
-if "source" not in st.session_state:
-    st.session_state.source = SampleSource()
-    st.session_state.events = st.session_state.source.history(minutes=15)
-source = st.session_state.source
-source.rate = rate
-
 st.title("🛡️ Threat Arena")
-if source_name == "Sample data":
+
+# A new source starts a fresh page of events.
+if st.session_state.get("source_name") != source_name:
+    try:
+        if live_mode:
+            with st.spinner("Connecting to Sentinel and loading the last few hours..."):
+                st.session_state.source = SentinelSource()
+                st.session_state.events = st.session_state.source.history(minutes=KEEP_MINUTES)
+        else:
+            st.session_state.source = SampleSource()
+            st.session_state.events = st.session_state.source.history(minutes=15)
+    except SourceError as err:
+        st.error(f"Couldn't read Sentinel: {err}")
+        st.stop()
+    st.session_state.source_name = source_name
+source = st.session_state.source
+
+if live_mode:
+    st.caption("**Live from Sentinel.** Real attacks on your honeypot. Events reach Sentinel 2–5 minutes after "
+               "they happen, and the page checks for new ones every 30 seconds.")
+    with st.sidebar:
+        st.divider()
+        st.markdown("**Honeypot**")
+        power, ip = honeypot_status()
+        if power is None:
+            st.caption("No honeypot found. Turn it on in sentinel-terraform (lab.auto.tfvars).")
+        else:
+            st.markdown(f"{'🟢' if power == 'VM running' else '⚪'} {power}  \n`{ip}` port 22")
+            if power != "VM running":
+                st.caption("It shuts down every night at 11 pm Eastern.")
+                if st.button("Start honeypot", help="az vm start. Takes a minute or two; then bots find it "
+                                                    "within minutes."):
+                    start_honeypot()
+                    st.success("Starting. Refresh in a minute or two.")
+else:
+    source.rate = rate
     st.caption("**Sample data.** Simulated botnets with documentation-only IPs (192.0.2.x, 198.51.100.x, "
-               "203.0.113.x). Step 2 in the README connects a real honeypot.")
+               "203.0.113.x). Choose **Sentinel (live)** in the sidebar for real honeypot attacks.")
 
 
 def recent_events():
@@ -52,10 +87,16 @@ def recent_events():
 @st.fragment(run_every=None if paused else refresh)
 def live():
     if not paused:
-        st.session_state.events += source.tick(seconds=refresh)
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=60)
+        try:
+            st.session_state.events += source.tick(seconds=refresh)
+        except SourceError as err:
+            st.warning(f"Couldn't check Sentinel just now: {err}")
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=KEEP_MINUTES)
         st.session_state.events = [e for e in st.session_state.events if e.time >= cutoff]
     events = recent_events()
+    if live_mode and not events:
+        st.info(f"No honeypot attacks in the last {window} minutes yet. A new honeypot is usually found within "
+                "minutes, and events take 2–5 minutes to reach Sentinel. Check the honeypot is running (sidebar).")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Bursts", len(events))
@@ -63,7 +104,7 @@ def live():
     c3.metric("Attacker IPs", len({e.source_ip for e in events}))
     c4.metric("Countries", len({e.country for e in events}))
     c5.metric("Got through", sum(not e.blocked for e in events),
-              help="Bursts the defence didn't stop. In real data, start your investigation here.")
+              help="Bursts the defence didn't stop. On the honeypot: bots that logged in to the fake shell.")
 
     left, right = st.columns([2, 1])
     with left:
@@ -128,7 +169,7 @@ with c1:
     st.markdown(f"**Why it's a bot.** {a.why_bot}")
     st.markdown("**What to look for in the logs**\n" + "\n".join(f"- {x}" for x in a.look_for))
     st.markdown("**How to stop it**\n" + "\n".join(f"- {x}" for x in a.defend))
-    st.caption(f"In the Minecraft arena (step 4) this attack is a **{a.minecraft_mob}**.")
+    st.caption(f"In the Minecraft arena this attack is a **{a.minecraft_mob}**.")
 with c2:
     mine = [e for e in events if e.attack == pick]
     if mine:

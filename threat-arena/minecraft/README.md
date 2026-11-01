@@ -19,6 +19,8 @@ Walk among the attackers. Every bot attack burst becomes a named mob that appear
 | 💥 Creeper | Exploit attempt |
 | 🦇 Phantom (flying) | AI crawler / scraper |
 | 🪓 Vindicator | Credential stuffing |
+| 🕷️ Spider | Commands after break-in (honeypot) |
+| 🐂 Ravager | Malware download (honeypot) |
 | Name above each mob | Attacker IP, attack type, number of attempts in the burst |
 | Glowing outline, red name | **Got through.** Reaches the beacon, rings a bell, and posts a red chat message |
 | Direction a mob comes from | The real compass direction of the attacker from Virginia, along the shortest path over the globe. Red post = north, yellow = east, blue = south, green = west |
@@ -55,6 +57,8 @@ The first time, it:
 4. Builds the castle and starts sending attacks. Each one is printed as it arrives; `!!` marks the ones that got through.
 
 `./start --rate 60` doubles the attacks per minute. Ctrl+C stops the attacks; the server keeps running.
+
+**Real attacks:** `./start --source sentinel` plays your honeypot's attacks from Sentinel instead of sample data. It needs `az login`, replays the last 30 minutes (`--history 60` for an hour), then follows live, a few minutes behind. Mobs that got through are real bots that logged in to the fake shell. See "Live attacks from Sentinel" in the main README.
 
 ### 3. Join in Minecraft
 

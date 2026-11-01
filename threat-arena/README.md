@@ -48,16 +48,37 @@ It starts on **sample data**: simulated botnets attacking a lab in Azure East US
 | 💥 | Exploit attempt | T1190 | A payload aimed at a specific bug, such as Log4Shell |
 | 🦇 | AI crawler / scraper | T1593 | Bulk-downloading your site for AI training or reconnaissance |
 | 🗝️ | Credential stuffing | T1110.004 | Replaying leaked username and password pairs from other breaches |
+| 🕷️ | Commands after break-in | T1082 | A bot that got in sizing up the machine: `uname -a`, CPU, memory |
+| ☠️ | Malware download | T1105 | A bot that got in fetching its payload with `wget` or `curl` |
 
 ## Roadmap: step by step
 
 Each step works on its own, and each one is a good first contribution.
 
 - [x] **Step 1: Sample data and the web map.** Runs anywhere, no cloud account.
-- [ ] **Step 2: A real honeypot.** Terraform for a small, isolated Azure VM running [Cowrie](https://github.com/cowrie/cowrie) (a fake SSH server). Real bots find it within minutes. Its logs go to Sentinel. Includes a daily data cap, because a busy honeypot can send a lot of data.
-- [ ] **Step 3: Live Sentinel source.** `threatfeed/sentinel.py` queries the Log Analytics workspace with KQL every few seconds and turns the rows into `ThreatEvent`s. The **Source** menu gets a "Sentinel (live)" option.
+- [x] **Step 2: A real honeypot.** `sentinel-terraform/terraform/modules/honeypot`: a small, isolated Azure VM running [Cowrie](https://github.com/cowrie/cowrie) (a fake SSH server) on port 22. Real bots find it within minutes. Every login attempt and command goes to Sentinel's `Syslog` table. The workspace has a 1 GB/day cap and the VM shuts down at 11 pm Eastern.
+- [x] **Step 3: Live Sentinel source.** `threatfeed/sentinel.py` queries the workspace with KQL every 30 seconds, groups events into one-minute bursts per attacker, and locates each IP with KQL's `geo_info_from_ip_address()`. Choose **Sentinel (live)** in the web map's sidebar, or run `./start --source sentinel` for Minecraft. See [Live attacks from Sentinel](#live-attacks-from-sentinel).
 - [x] **Step 4: The Minecraft arena.** Each attacker becomes a named mob that marches on your castle from the attacker's real direction: 🧟 zombie = brute force, 💀 skeleton = scanning, 💥 creeper = exploit, 🦇 phantom = crawler. Runs on sample data now. See [minecraft/README.md](minecraft/README.md).
 - [ ] **Ideas:** AI explanations of a single burst, replaying a saved attack log, a Sentinel workbook version, alerts when something gets through.
+
+## Live attacks from Sentinel
+
+Needs the honeypot deployed by `sentinel-terraform` (it's on in `sentinel-terraform/terraform/lab.auto.tfvars`), the Azure CLI, and `az login` with read access to the workspace.
+
+```
+honeypot VM :22 ──▶ Cowrie (fake SSH) ──JSON──▶ syslog local0 ──▶ Azure Monitor Agent ──▶ Sentinel (Syslog table)
+                                                                                              │  KQL every 30 s
+                                                              web map  ◀── threatfeed/sentinel.py ──▶  Minecraft
+```
+
+1. **Web map:** `./run`, then choose **Sentinel (live)** in the sidebar. The sidebar shows whether the honeypot is running, and has a **Start honeypot** button for after its nightly shutdown.
+2. **Minecraft:** `cd minecraft && ./start --source sentinel`. It replays the last 30 minutes, then follows live.
+
+What to expect:
+- **A few minutes behind.** Events reach Sentinel 2–5 minutes after they happen.
+- **Mostly 🧟 brute force.** Some bots guess a password the fake shell accepts. Those show as **got through**, followed by 🕷️ commands and ☠️ malware downloads from the same IP. On the honeypot, that's the best part: you see the whole playbook, and nothing is really at risk.
+- **Unknown location** IPs (anycast or unlisted ranges) appear in the mid-Atlantic on the map.
+- To try the KQL yourself, open the workspace's **Logs** and paste the `QUERY` from `threatfeed/sentinel.py` (replace `{since}` with `1970-01-01` and `{minutes}` with `60`).
 
 ## Project layout
 
@@ -68,6 +89,7 @@ Each step works on its own, and each one is a good first contribution.
 | `threatfeed/events.py` | `ThreatEvent`: one burst of activity from one attacker |
 | `threatfeed/catalog.py` | Every attack type: plain-English explanation, MITRE technique, signals, defences, colour, Minecraft mob |
 | `threatfeed/sample.py` | The sample source: simulated botnet campaigns with realistic log lines |
+| `threatfeed/sentinel.py` | The Sentinel source: real honeypot attacks, read with KQL through your `az login` |
 | `minecraft/` | The Minecraft arena: server in Docker, and the bridge that turns events into mobs |
 
 ## Add on to it
