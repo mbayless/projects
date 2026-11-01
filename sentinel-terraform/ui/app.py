@@ -246,8 +246,8 @@ with st.sidebar:
 st.title("Sentinel Terraform")
 st.caption("Check, plan and manage the Sentinel analytics rules. Each button shows the command it runs.")
 
-tab_setup, tab_plan, tab_validate, tab_rules, tab_deploy, tab_status = st.tabs(
-    ["⚙️ Setup", "📋 Plan", "✅ Validate", "📜 Rules", "🚀 Deploy", "🩺 Status"])
+tab_setup, tab_plan, tab_validate, tab_rules, tab_deploy, tab_incidents, tab_status = st.tabs(
+    ["⚙️ Setup", "📋 Plan", "✅ Validate", "📜 Rules", "🚀 Deploy", "🧹 Incidents", "🩺 Status"])
 
 # --- Setup --------------------------------------------------------------------
 
@@ -262,7 +262,9 @@ with tab_setup:
                "Its own state stays on this Mac in `state-storage/terraform.tfstate`. Don't delete that file.")
     if outputs.get("storage_account_name"):
         st.success(f"Created: **{outputs['storage_account_name']}** in {outputs['resource_group_name']}")
-    elif account is None:
+        st.caption("Changed something in `state-storage/`? Plan and apply it here. Pushing to GitHub doesn't "
+                   "apply it: this folder only runs from this Mac. Then re-run the bootstrap (step 2).")
+    if account is None:
         st.warning("Sign in to Azure first (`az login`), then Refresh.")
     else:
         rg_exists = quiet(["az", "group", "exists", "-n", STATE_RG])[1] == "true"
@@ -491,11 +493,40 @@ with tab_deploy:
         else:
             st.warning("No runs found. The workflow only runs once it's at the repo root and pushed.")
 
+# --- Incidents ----------------------------------------------------------------
+
+with tab_incidents:
+    st.subheader("Close old incidents")
+    st.write("Closes open Sentinel incidents created more than N days ago, with classification "
+             "**Undetermined** and an \"Auto-closed\" comment. Closed incidents stay searchable; "
+             "they just leave the active queue.")
+    st.caption("GitHub Actions also runs this every day at 06:00 UTC with 14 days "
+               "(`.github/workflows/sentinel-close-old-incidents.yml`).")
+    script = "scripts/close-old-incidents.sh"
+    days = st.number_input("Older than (days)", min_value=1, max_value=365, value=14, step=1)
+    if not have("jq"):
+        st.warning("The script needs jq. Install it with `brew install jq`, then Refresh.")
+    elif account is None:
+        st.caption("Sign in to Azure to see incidents.")
+    else:
+        c1, c2 = st.columns(2)
+        if c1.button("Preview", help="Lists what would be closed. Changes nothing."):
+            stream(["bash", script, "--dry-run", str(days)], f"{script} --dry-run {days}",
+                   "Lists open incidents older than the cutoff. Changes nothing.", cwd=ROOT)
+        ok_close = c2.checkbox(f"Close every open incident older than {days} days")
+        if c2.button("Close incidents", type="primary", disabled=not ok_close):
+            code, _ = stream(["bash", script, str(days)], f"{script} {days}",
+                             "Closes each incident listed. If one fails, it carries on with the rest.", cwd=ROOT)
+            if code == 0:
+                st.success("Done.")
+            else:
+                st.error("Some incidents could not be closed. The errors are above.")
+
 # --- Status -------------------------------------------------------------------
 
 with tab_status:
     st.subheader("Tools and Azure")
-    for tool, pkg in [("terraform", "terraform"), ("az", "azure-cli"), ("gh", "gh")]:
+    for tool, pkg in [("terraform", "terraform"), ("az", "azure-cli"), ("gh", "gh"), ("jq", "jq")]:
         if have(tool):
             st.markdown(f"✅ `{tool}` installed")
         else:

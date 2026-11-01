@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Stop the Minecraft server. The world is kept in server-data/ for next time.
+#
+# Usage: ./stop           stop the server
+#        ./stop --reset   stop it and delete the world, so ./start builds a fresh one
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+cd "$HERE"
+
+docker compose down
+if [[ "${1:-}" == "--reset" ]]; then
+  rm -rf server-data
+  echo "==> Deleted the world (server-data/)."
+fi

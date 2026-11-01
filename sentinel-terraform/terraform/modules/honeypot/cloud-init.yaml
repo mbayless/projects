@@ -1,0 +1,44 @@
+#cloud-config
+# Runs once, on the honeypot's first boot.
+# 1. Moves the real SSH server to port 22222 (blocked by the NSG) so Cowrie can have port 22.
+# 2. Runs Cowrie (a fake SSH server) in Docker, writing JSON events to /var/lib/cowrie/log.
+# 3. Forwards each JSON event to syslog (local0, tag "cowrie"); the Azure Monitor Agent
+#    sends local0 to Sentinel's Syslog table.
+package_update: true
+packages:
+  - docker.io
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-honeypot.conf
+    content: |
+      # The real SSH server. Not reachable from the internet: the NSG only opens 22 (Cowrie).
+      Port 22222
+
+  - path: /etc/systemd/system/cowrie-to-syslog.service
+    content: |
+      [Unit]
+      Description=Forward Cowrie JSON events to syslog local0 for the Azure Monitor Agent
+      After=docker.service
+
+      [Service]
+      # One JSON event per line. --size keeps long commands from being cut off.
+      ExecStart=/bin/sh -c 'tail -n0 -F /var/lib/cowrie/log/cowrie.json | logger -t cowrie -p local0.info --size 8192'
+      Restart=always
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl restart ssh
+  # Cowrie's container runs as user 999.
+  - mkdir -p /var/lib/cowrie/log
+  - chown 999:999 /var/lib/cowrie/log
+  - >-
+    docker run -d --name cowrie --restart unless-stopped
+    -p 22:2222
+    -v /var/lib/cowrie/log:/cowrie/cowrie-git/var/log/cowrie
+    -e COWRIE_OUTPUT_JSONLOG_LOGFILE=/cowrie/cowrie-git/var/log/cowrie/cowrie.json
+    -e COWRIE_HONEYPOT_HOSTNAME=${fake_hostname}
+    ${cowrie_image}
+  - systemctl daemon-reload
+  - systemctl enable --now cowrie-to-syslog

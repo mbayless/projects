@@ -106,6 +106,8 @@ echo "  token subject prefix: $SUBJECT_PREFIX"
 # Pull requests run the plan; the production environment runs the apply.
 add_federated_credential "github-pull-request" "${SUBJECT_PREFIX}:pull_request"
 add_federated_credential "github-env-production" "${SUBJECT_PREFIX}:environment:production"
+# The daily incident cleanup (.github/workflows/sentinel-close-old-incidents.yml).
+add_federated_credential "github-env-sentinel-maintenance" "${SUBJECT_PREFIX}:environment:sentinel-maintenance"
 
 # --- Roles ------------------------------------------------------------------
 step "Assigning roles"
@@ -138,6 +140,15 @@ fi
 
 # --- GitHub repository settings ---------------------------------------------
 step "Saving repository variables in GitHub"
+
+# sentinel-maintenance runs the incident cleanup without approval, so only let
+# workflows on main use it (and with it, the Azure sign-in).
+ensure_maintenance_environment() {
+  local env="repos/$REPO/environments/sentinel-maintenance"
+  gh api --method PUT "$env" --silent --input - <<<'{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' &&
+  { gh api "$env/deployment-branch-policies" --jq '.branch_policies[].name' | grep -qx main ||
+    gh api --method POST "$env/deployment-branch-policies" -f name=main -f type=branch --silent; }
+}
 GH_DONE=false
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   if gh variable set AZURE_CLIENT_ID       --repo "$REPO" --body "$APP_ID" &&
@@ -145,7 +156,8 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
      gh variable set AZURE_SUBSCRIPTION_ID --repo "$REPO" --body "$SUBSCRIPTION_ID" &&
      gh variable set TF_STATE_RG           --repo "$REPO" --body "$STATE_RG" &&
      gh variable set TF_STATE_STORAGE      --repo "$REPO" --body "$STORAGE_NAME" &&
-     gh api --method PUT "repos/$REPO/environments/production" --silent; then
+     gh api --method PUT "repos/$REPO/environments/production" --silent &&
+     ensure_maintenance_environment; then
     GH_DONE=true
   fi
 fi
@@ -163,8 +175,9 @@ Done. Repository variables:
 EOF
 
 if [[ "$GH_DONE" == "true" ]]; then
-  echo "Saved these in $REPO and created the 'production' environment."
+  echo "Saved these in $REPO and created the 'production' and 'sentinel-maintenance' environments."
 else
   echo "Could not update GitHub. Add the values above under Settings > Secrets and variables >"
-  echo "Actions > Variables, and create an environment named 'production' under Settings > Environments."
+  echo "Actions > Variables, and create environments named 'production' and 'sentinel-maintenance'"
+  echo "(deployment branches: main only) under Settings > Environments."
 fi
