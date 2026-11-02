@@ -123,7 +123,7 @@ Expect `No changes.` From now on, `terraform plan` locally is for learning and c
 
 ## State loss (2026-10-26) and the fix
 
-The first pipeline applies saved state in the old storage account `sttfstateir60x19h`. Renaming the state storage deleted that account and the state in it, so the next apply failed with "already exists". `terraform/imports.tf` re-adopts the workspace, Sentinel onboarding, Activity log setting and two rules; the plan shows **5 to import**. Lesson: before replacing a state storage account, check the container for `sentinel.tfstate` and move it first.
+The first pipeline applies saved state in the old storage account `sttfstateir60x19h`. Renaming the state storage deleted that account and the state in it, so the next apply failed with "already exists". `terraform/imports.tf` re-adopts the workspace, Sentinel onboarding, Activity log setting and all three rules. The first apply (2026-11-01) imported five; the NRT rule `nsg-rule-changed` also existed and needed a sixth import block. Lesson: before replacing a state storage account, check the container for `sentinel.tfstate` and move it first.
 
 ## Not done yet
 

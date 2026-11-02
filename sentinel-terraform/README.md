@@ -156,7 +156,7 @@ This uses your `az login` session. Avoid running `apply` locally once the pipeli
 
 ## Cost
 
-Activity log data is small. New Sentinel workspaces usually qualify for a free trial period; check current Microsoft Sentinel pricing for your region. To remove everything, delete the `rg-sentinel-lab` and `rg-terraform-state` resource groups and the subscription diagnostic setting `send-activity-log-to-sentinel`.
+Activity log data is small. The honeypot VM (`Standard_D2as_v4`) costs roughly $0.10 an hour while it runs; it stops each night at 11 pm Eastern and stays off until you start it. B-series sizes, which are cheaper, aren't available to this subscription in eastus. New Sentinel workspaces usually qualify for a free trial period; check current Microsoft Sentinel pricing for your region. To remove everything, delete the `rg-sentinel-lab` and `rg-terraform-state` resource groups and the subscription diagnostic setting `send-activity-log-to-sentinel`.
 
 ## How this maps to SC-200
 

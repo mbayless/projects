@@ -14,9 +14,9 @@ variable "workspace_id" {
 }
 
 variable "vm_size" {
-  description = "VM size. B1ms (1 vCPU, 2 GB) runs Cowrie and the Azure Monitor Agent comfortably."
+  description = "VM size. B-series sizes are blocked for this subscription in eastus (2026-11-01), so D2as_v4 (2 vCPU, 8 GB)."
   type        = string
-  default     = "Standard_B1ms"
+  default     = "Standard_D2as_v4"
 }
 
 variable "cowrie_image" {
