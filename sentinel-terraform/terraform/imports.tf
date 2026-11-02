@@ -32,3 +32,9 @@ import {
   to       = azurerm_sentinel_alert_rule_scheduled.rule[each.key]
   id       = "${local.workspace_import_id}/providers/Microsoft.SecurityInsights/alertRules/${each.key}"
 }
+
+# Added 2026-11-01: the first apply showed this rule also already exists.
+import {
+  to = azurerm_sentinel_alert_rule_nrt.rule["nsg-rule-changed"]
+  id = "${local.workspace_import_id}/providers/Microsoft.SecurityInsights/alertRules/nsg-rule-changed"
+}
